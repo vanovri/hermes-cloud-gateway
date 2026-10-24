@@ -21,12 +21,14 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install Hermes Agent & Dependencies
+      - name: Install Hermes Agent, 9router & Dependencies
         run: |
-          sudo apt-get update && sudo apt-get install -y ripgrep jq openssl sqlite3
+          sudo apt-get update && sudo apt-get install -y ripgrep jq openssl sqlite3 curl
           curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+          export PATH="$HOME/.local/bin:$HOME/.hermes/node/bin:$PATH"
+          npm install -g 9router@latest
 
-      - name: Restore Encrypted Hermes State
+      - name: Restore Encrypted Hermes & 9router State
         env:
           HERMES_BUNDLE_KEY: ${{ secrets.HERMES_BUNDLE_KEY }}
         run: |
@@ -36,12 +38,23 @@ jobs:
           if [ -f "$HOME/.hermes/state.db" ]; then
             sqlite3 "$HOME/.hermes/state.db" "DELETE FROM compression_locks; DELETE FROM session_turn_leases; DELETE FROM gateway_hygiene_state; PRAGMA wal_checkpoint(TRUNCATE);" || true
           fi
-          export PATH="$HOME/.local/bin:$HOME/.hermes/bin:$HOME/.hermes/hermes-agent/.hermes/bin:$PATH"
+          if [ -f "$HOME/.9router/db/data.sqlite" ]; then
+            sqlite3 "$HOME/.9router/db/data.sqlite" "PRAGMA wal_checkpoint(TRUNCATE);" || true
+          fi
+          export PATH="$HOME/.local/bin:$HOME/.hermes/bin:$HOME/.hermes/hermes-agent/.hermes/bin:$HOME/.hermes/node/bin:$PATH"
           hermes config set terminal.backend local || true
 
-      - name: Run Hermes Telegram Gateway (5h 20m cycle)
+      - name: Start 9router Token Balancer & Run Hermes Gateway (5h 20m cycle)
         run: |
-          export PATH="$HOME/.local/bin:$HOME/.hermes/bin:$HOME/.hermes/hermes-agent/.hermes/bin:$HOME/.hermes/node/bin:$PATH"
+          export PATH="$HOME/.local/bin:$HOME/.hermes/bin:$HOME/.hermes/hermes-agent/.hermes/bin:$HOME/.hermes/node/bin:$(npm prefix -g)/bin:$PATH"
+          nohup 9router --tray --skip-update -n -H 127.0.0.1 -p 20128 >/tmp/9router.log 2>&1 &
+          for i in $(seq 1 30); do
+            if curl -sf -H "Authorization: Bearer sk-f4d354ec9c488438-thqt00-82856ac7" http://127.0.0.1:20128/v1/models >/dev/null 2>&1; then
+              echo "9router ready on 127.0.0.1:20128"
+              break
+            fi
+            sleep 1
+          done
           timeout --signal=SIGTERM 19200s hermes gateway run || true
 
       - name: Persist Updated State & Re-dispatch Next Cycle
@@ -52,6 +65,9 @@ jobs:
         run: |
           if [ -f "$HOME/.hermes/state.db" ]; then
             sqlite3 "$HOME/.hermes/state.db" "DELETE FROM compression_locks; DELETE FROM session_turn_leases; PRAGMA wal_checkpoint(TRUNCATE);" || true
+          fi
+          if [ -f "$HOME/.9router/db/data.sqlite" ]; then
+            sqlite3 "$HOME/.9router/db/data.sqlite" "PRAGMA wal_checkpoint(TRUNCATE);" || true
           fi
           tar -czf /tmp/hermes-bundle.tar.gz -C "$HOME" \
             .hermes/.env \
@@ -66,6 +82,12 @@ jobs:
             .hermes/kanban.db \
             .hermes/shared-state.db \
             .hermes/channel_directory.json \
+            .9router/db/data.sqlite \
+            .9router/jwt-secret \
+            .9router/machine-id \
+            .9router/auth \
+            .9router/model-catalog.json \
+            .9router/model-catalog-raw.json \
             .cua/credentials.json \
             .cua/device-key \
             .cua/session.json 2>/dev/null || true
