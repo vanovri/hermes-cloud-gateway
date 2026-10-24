@@ -23,7 +23,7 @@ jobs:
 
       - name: Install Hermes Agent & Dependencies
         run: |
-          sudo apt-get update && sudo apt-get install -y ripgrep jq openssl
+          sudo apt-get update && sudo apt-get install -y ripgrep jq openssl sqlite3
           curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
 
       - name: Restore Encrypted Hermes State
@@ -33,31 +33,42 @@ jobs:
           openssl enc -d -aes-256-cbc -pbkdf2 -in hermes-bundle.enc -out /tmp/hermes-bundle.tar.gz -pass env:HERMES_BUNDLE_KEY
           tar -xzf /tmp/hermes-bundle.tar.gz -C "$HOME"
           rm -f /tmp/hermes-bundle.tar.gz
-          export PATH="$HOME/.local/bin:$HOME/.hermes/hermes-agent/.hermes/bin:$PATH"
+          if [ -f "$HOME/.hermes/state.db" ]; then
+            sqlite3 "$HOME/.hermes/state.db" "DELETE FROM compression_locks; DELETE FROM session_turn_leases; DELETE FROM gateway_hygiene_state; PRAGMA wal_checkpoint(TRUNCATE);" || true
+          fi
+          export PATH="$HOME/.local/bin:$HOME/.hermes/bin:$HOME/.hermes/hermes-agent/.hermes/bin:$PATH"
           hermes config set terminal.backend local || true
 
       - name: Run Hermes Telegram Gateway (5h 20m cycle)
         run: |
-          export PATH="$HOME/.local/bin:$HOME/.hermes/hermes-agent/.hermes/bin:$HOME/.hermes/node/bin:$PATH"
+          export PATH="$HOME/.local/bin:$HOME/.hermes/bin:$HOME/.hermes/hermes-agent/.hermes/bin:$HOME/.hermes/node/bin:$PATH"
           timeout --signal=SIGTERM 19200s hermes gateway run || true
 
       - name: Persist Updated State & Re-dispatch Next Cycle
-        if: always()
+        if: '!cancelled()'
         env:
           HERMES_BUNDLE_KEY: ${{ secrets.HERMES_BUNDLE_KEY }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          if [ -f "$HOME/.hermes/state.db" ]; then
+            sqlite3 "$HOME/.hermes/state.db" "DELETE FROM compression_locks; DELETE FROM session_turn_leases; PRAGMA wal_checkpoint(TRUNCATE);" || true
+          fi
           tar -czf /tmp/hermes-bundle.tar.gz -C "$HOME" \
             .hermes/.env \
+            .hermes/.copilot_jwt.json \
             .hermes/auth.json \
             .hermes/config.yaml \
             .hermes/SOUL.md \
+            .hermes/bin \
             .hermes/memories \
             .hermes/skills \
             .hermes/state.db \
             .hermes/kanban.db \
             .hermes/shared-state.db \
-            .hermes/channel_directory.json 2>/dev/null || true
+            .hermes/channel_directory.json \
+            .cua/credentials.json \
+            .cua/device-key \
+            .cua/session.json 2>/dev/null || true
           openssl enc -aes-256-cbc -pbkdf2 -salt -in /tmp/hermes-bundle.tar.gz -out hermes-bundle.enc -pass env:HERMES_BUNDLE_KEY
           rm -f /tmp/hermes-bundle.tar.gz
           git config user.name "hermes-bot"
