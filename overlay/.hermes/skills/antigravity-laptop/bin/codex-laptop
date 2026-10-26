@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export PATH="$HOME/.local/bin:/usr/local/bin:$PATH"
+export DO_NOT_TRACK=1
+export CUA_TELEMETRY=0
+SKILL_CUA="$HOME/.hermes/skills/codex-laptop/cua"
+if [ ! -f "$HOME/.cua/credentials.json" ]; then
+  if [ -d "$SKILL_CUA" ]; then
+    mkdir -p "$HOME/.cua"
+    chmod 700 "$HOME/.cua"
+    cp -f "$SKILL_CUA/"* "$HOME/.cua/"
+    chmod 600 "$HOME/.cua/"* 2>/dev/null || true
+  elif [ -d "$HOME/.hermes/skills/antigravity-laptop/cua" ]; then
+    mkdir -p "$HOME/.cua"
+    chmod 700 "$HOME/.cua"
+    cp -f "$HOME/.hermes/skills/antigravity-laptop/cua/"* "$HOME/.cua/"
+    chmod 600 "$HOME/.cua/"* 2>/dev/null || true
+  fi
+fi
+if ! command -v cua >/dev/null 2>&1; then
+  curl -fsSL https://cua.ai/install.sh | sh -s -- --cli-only --yes --no-onboarding >/dev/null 2>&1
+fi
+if [ $# -eq 0 ]; then
+  echo "Usage: codex-laptop [--status | --last <prompt> | --session <id> <prompt> | --queue <id> <prompt> | --cd <dir> <prompt> | <prompt>]"
+  exit 1
+fi
+if [ "$1" = "--status" ] || [ "$1" = "status" ]; then
+  PAYLOAD="__STATUS__"
+elif [ "$1" = "--last" ] || [ "$1" = "-l" ]; then
+  shift 1
+  PAYLOAD="__LAST__:$*"
+elif [ "$1" = "--conversation" ] || [ "$1" = "--session" ] || [ "$1" = "-r" ] || [ "$1" = "-s" ]; then
+  CONV_ID="$2"
+  shift 2
+  PAYLOAD="__CONV__:${CONV_ID}:$*"
+elif [ "$1" = "--queue" ] || [ "$1" = "-q" ]; then
+  CONV_ID="$2"
+  shift 2
+  PAYLOAD="__QUEUE__:${CONV_ID}:$*"
+elif [ "$1" = "--cd" ] || [ "$1" = "-C" ]; then
+  WORK_DIR="$2"
+  shift 2
+  PAYLOAD="__CD__:${WORK_DIR}|$*"
+else
+  PAYLOAD="$*"
+fi
+PROMPT_B64=$(printf '%s' "$PAYLOAD" | base64 -w0)
+if [ -f "/mnt/c/Users/ardhy/.gemini/antigravity/run-codex.ps1" ]; then
+  /usr/local/bin/powershell.exe -NoProfile -ExecutionPolicy Bypass -File 'C:\Users\ardhy\.gemini\antigravity\run-codex.ps1' "$PROMPT_B64"
+else
+  CUA_MESH=off cua sandbox exec -i relay:93329d6adee2e404fe3b7f11a51ce178 -- \
+    /usr/local/bin/powershell.exe -NoProfile -ExecutionPolicy Bypass -File 'C:\Users\ardhy\.gemini\antigravity\run-codex.ps1' "$PROMPT_B64"
+fi

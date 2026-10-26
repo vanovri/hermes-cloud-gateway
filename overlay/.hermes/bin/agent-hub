@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export PATH="$HOME/.local/bin:/usr/local/bin:$PATH"
+export DO_NOT_TRACK=1
+export CUA_TELEMETRY=0
+SKILL_CUA="$HOME/.hermes/skills/antigravity-laptop/cua"
+if [ ! -f "$HOME/.cua/credentials.json" ] && [ -d "$SKILL_CUA" ]; then
+  mkdir -p "$HOME/.cua"
+  chmod 700 "$HOME/.cua"
+  cp -f "$SKILL_CUA/"* "$HOME/.cua/"
+  chmod 600 "$HOME/.cua/"* 2>/dev/null || true
+fi
+if ! command -v cua >/dev/null 2>&1; then
+  curl -fsSL https://cua.ai/install.sh | sh -s -- --cli-only --yes --no-onboarding >/dev/null 2>&1
+fi
+ARGS_B64=$(python3 -c 'import sys, json, base64; print(base64.b64encode(json.dumps(sys.argv[1:]).encode("utf-8")).decode("ascii"))' "$@")
+if [ -f "/mnt/c/Users/ardhy/.gemini/antigravity/agent-hub.py" ]; then
+  /mnt/c/Python314/python.exe 'C:\Users\ardhy\.gemini\antigravity\agent-hub.py' --b64-args "$ARGS_B64"
+else
+  CUA_MESH=off cua sandbox exec -i relay:93329d6adee2e404fe3b7f11a51ce178 -- \
+    /mnt/c/Python314/python.exe 'C:\Users\ardhy\.gemini\antigravity\agent-hub.py' --b64-args "$ARGS_B64"
+fi
