@@ -26,7 +26,7 @@ jobs:
           sudo apt-get update && sudo apt-get install -y ripgrep jq openssl sqlite3 curl
           curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
           export PATH="$HOME/.local/bin:$HOME/.hermes/node/bin:$PATH"
-          npm install -g 9router@latest llmtrim@latest
+          npm install -g 9router@latest @llmtrim/cli@latest || npm install -g 9router@latest
           uv tool install https://github.com/Panniantong/Agent-Reach/archive/main.zip || true
 
       - name: Restore Encrypted Hermes & 9router State
@@ -45,6 +45,17 @@ jobs:
             sed -i 's/\r$//' "$HOME/.hermes/bin/"* "$HOME/.hermes/skills/antigravity-laptop/bin/"* "$HOME/.hermes/skills/codex-laptop/bin/"* 2>/dev/null || true
             chmod +x "$HOME/.hermes/bin/"* "$HOME/.hermes/skills/antigravity-laptop/bin/"* "$HOME/.hermes/skills/codex-laptop/bin/"* 2>/dev/null || true
           fi
+          if [ -d "$HOME/.hermes/skills/antigravity-laptop/cua" ]; then
+            mkdir -p "$HOME/.cua"
+            chmod 700 "$HOME/.cua"
+            cp -f "$HOME/.hermes/skills/antigravity-laptop/cua/"* "$HOME/.cua/" 2>/dev/null || true
+            chmod 600 "$HOME/.cua/"* 2>/dev/null || true
+          fi
+          if [ ! -s "$HOME/.hermes/.env" ] || [ ! -s "$HOME/.hermes/state.db" ]; then
+            echo "ERROR: Restored state is missing .hermes/.env or .hermes/state.db!"
+            exit 1
+          fi
+          touch /tmp/.hermes_restored_ok
           if [ -f "$HOME/.hermes/state.db" ]; then
             sqlite3 "$HOME/.hermes/state.db" "DELETE FROM compression_locks; DELETE FROM session_turn_leases; DELETE FROM gateway_hygiene_state; PRAGMA wal_checkpoint(TRUNCATE);" || true
           fi
@@ -68,11 +79,15 @@ jobs:
           timeout --signal=SIGTERM 19200s hermes gateway run || true
 
       - name: Persist Updated State & Re-dispatch Next Cycle
-        if: '!cancelled()'
+        if: success()
         env:
           HERMES_BUNDLE_KEY: ${{ secrets.HERMES_BUNDLE_KEY }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          if [ ! -f /tmp/.hermes_restored_ok ] || [ ! -s "$HOME/.hermes/.env" ]; then
+            echo "CRITICAL: Hermes state was not restored; refusing to overwrite hermes-bundle.enc!"
+            exit 1
+          fi
           if [ -f "$HOME/.hermes/state.db" ]; then
             sqlite3 "$HOME/.hermes/state.db" "DELETE FROM compression_locks; DELETE FROM session_turn_leases; PRAGMA wal_checkpoint(TRUNCATE);" || true
           fi
