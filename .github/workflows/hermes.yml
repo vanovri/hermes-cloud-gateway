@@ -64,6 +64,7 @@ jobs:
           fi
           export PATH="$HOME/.local/bin:$HOME/.hermes/bin:$HOME/.hermes/hermes-agent/.hermes/bin:$HOME/.hermes/node/bin:$PATH"
           hermes config set terminal.backend local || true
+          hermes config set platforms.telegram.extra.drop_pending_on_cold_boot false || true
 
       - name: Start 9router Token Balancer & Run Hermes Gateway (5h 20m cycle)
         run: |
