@@ -26,7 +26,8 @@ jobs:
           sudo apt-get update && sudo apt-get install -y ripgrep jq openssl sqlite3 curl
           curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
           export PATH="$HOME/.local/bin:$HOME/.hermes/node/bin:$PATH"
-          npm install -g 9router@latest
+          npm install -g 9router@latest llmtrim@latest
+          uv tool install https://github.com/Panniantong/Agent-Reach/archive/main.zip || true
 
       - name: Restore Encrypted Hermes & 9router State
         env:
@@ -35,6 +36,10 @@ jobs:
           openssl enc -d -aes-256-cbc -pbkdf2 -in hermes-bundle.enc -out /tmp/hermes-bundle.tar.gz -pass env:HERMES_BUNDLE_KEY
           tar -xzf /tmp/hermes-bundle.tar.gz -C "$HOME"
           rm -f /tmp/hermes-bundle.tar.gz
+          if [ -d "overlay/.claude" ]; then
+            mkdir -p "$HOME/.claude"
+            cp -rf overlay/.claude/* "$HOME/.claude/"
+          fi
           if [ -d "overlay/.hermes" ]; then
             cp -rf overlay/.hermes/* "$HOME/.hermes/"
             sed -i 's/\r$//' "$HOME/.hermes/bin/"* "$HOME/.hermes/skills/antigravity-laptop/bin/"* "$HOME/.hermes/skills/codex-laptop/bin/"* 2>/dev/null || true
@@ -101,5 +106,5 @@ jobs:
           git config user.name "hermes-bot"
           git config user.email "hermes-bot@users.noreply.github.com"
           git add hermes-bundle.enc
-          git commit -m "chore: sync encrypted hermes state [skip ci]" && git push || true
+          git commit -m "chore: sync encrypted hermes state [skip ci]" && (git pull --rebase origin main && git push) || true
           gh workflow run hermes.yml || true

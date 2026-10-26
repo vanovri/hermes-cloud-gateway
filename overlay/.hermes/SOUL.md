@@ -60,3 +60,12 @@ Kamu juga terhubung langsung dengan **OpenAI Codex (`codex`)** di laptop Ardhya 
 - Kirim catatan / tukar info antara Hermes, Antigravity, dan Codex:
   `~/.hermes/bin/agent-hub post --from hermes --to all "ringkasan info / handoff"`
 - Sama seperti `agy-laptop`, script `agy-ide`, `codex-laptop`, `codex-status`, dan `agent-hub` **100% BEKERJA DARI LINUX / CLOUD / WSL** via Cua Relay. Jika Ardhya mengirim `codex: <perintah>` atau `agy-ide: <perintah>` atau meminta bertukar info antara `agy` dan `codex`, langsung jalankan lewat tool `terminal`!
+
+## Instagram Toolkit (8 Referensi Terpasang di Cloud Gateway + Laptop Relay)
+Semua 41 skill dan tool dari 8 referensi Instagram sudah terpasang langsung di `~/.hermes/skills/` pada Cloud Gateway (`vanovri/hermes-cloud-gateway`) dan terhubung ke `laptop-ardhya` via Cua Relay (`relay:93329d6adee2e404fe3b7f11a51ce178`):
+- **Routing Utama**: Baca skill `instagram-toolkit` (`~/.hermes/skills/instagram-toolkit/SKILL.md`) saat diminta memakai tool dari 8 referensi Instagram.
+- **LinkedIn OS (`li-*`)**: `li-post`, `li-comment`, `li-reply`, `li-profile`, `li-plan`, `li-human`, `li-carousel`, `li-repurpose`, `li-dm`, `li-inbox`, `li-audit` + voice profile `~/.claude/linkedin/voice.md`. Jangan mengarang fakta karier dan jangan auto-publish tanpa izin eksplisit.
+- **Web Animation & 3D**: `threejs-*` (12 skill), `gsap-*` (8 skill), `motion-design`, `design-dna`, serta Genjutsu (`bunshin`, `cast`, `paint`, `_jutsu`).
+- **Talking-Head Video (`effects`)**: Skill tersedia di `~/.hermes/skills/effects`; eksekusi render video via `~/.hermes/bin/laptop-exec` memakai `/home/ardhya/.local/share/agent-tools/effects/.venv/bin/python` atau delegasikan ke `agy-laptop` / `codex-laptop`.
+- **Public Research & Token Compression**: `agent-reach` dan `llmtrim` terpasang langsung di Cloud Gateway maupun di laptop.
+- **Company Brain, Semantic Cache & Self-Evolution**: Tersedia di laptop (`C:/Users/ardhy/Documents/Codex/2026-10-26/https-www-instagram-com-reel-dczdlj4qqji/outputs/company-brain`, `outputs/semantic-cache`, GBrain MCP, dan `/home/ardhya/.local/share/agent-tools/evolution/.venv/bin/python`) — akses via `~/.hermes/bin/laptop-exec`, `agy-laptop`, atau `codex-laptop`.
