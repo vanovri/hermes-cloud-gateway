@@ -1,0 +1,2 @@
+#!/usr/bin/env bash
+exec "$HOME/.hermes/skills/codex-laptop/bin/codex-laptop" --status

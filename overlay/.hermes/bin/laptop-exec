@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export PATH="$HOME/.local/bin:/usr/local/bin:$PATH"
+export DO_NOT_TRACK=1
+export CUA_TELEMETRY=0
+SKILL_CUA="$HOME/.hermes/skills/antigravity-laptop/cua"
+if [ ! -f "$HOME/.cua/credentials.json" ] && [ -d "$SKILL_CUA" ]; then
+  mkdir -p "$HOME/.cua"
+  chmod 700 "$HOME/.cua"
+  cp -f "$SKILL_CUA/"* "$HOME/.cua/"
+  chmod 600 "$HOME/.cua/"* 2>/dev/null || true
+fi
+if ! command -v cua >/dev/null 2>&1; then
+  curl -fsSL https://cua.ai/install.sh | sh -s -- --cli-only --yes --no-onboarding >/dev/null 2>&1
+fi
+if [ $# -eq 0 ]; then
+  echo "Usage: laptop-exec <bash-command>"
+  exit 1
+fi
+CMD_B64=$(printf '%s' "$*" | base64 -w0)
+CUA_MESH=off cua sandbox exec -i relay:93329d6adee2e404fe3b7f11a51ce178 -- /usr/local/bin/host-exec-b64 "$CMD_B64"
