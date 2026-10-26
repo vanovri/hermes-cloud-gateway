@@ -35,6 +35,11 @@ jobs:
           openssl enc -d -aes-256-cbc -pbkdf2 -in hermes-bundle.enc -out /tmp/hermes-bundle.tar.gz -pass env:HERMES_BUNDLE_KEY
           tar -xzf /tmp/hermes-bundle.tar.gz -C "$HOME"
           rm -f /tmp/hermes-bundle.tar.gz
+          if [ -d "overlay/.hermes" ]; then
+            cp -rf overlay/.hermes/* "$HOME/.hermes/"
+            sed -i 's/\r$//' "$HOME/.hermes/bin/"* "$HOME/.hermes/skills/antigravity-laptop/bin/"* "$HOME/.hermes/skills/codex-laptop/bin/"* 2>/dev/null || true
+            chmod +x "$HOME/.hermes/bin/"* "$HOME/.hermes/skills/antigravity-laptop/bin/"* "$HOME/.hermes/skills/codex-laptop/bin/"* 2>/dev/null || true
+          fi
           if [ -f "$HOME/.hermes/state.db" ]; then
             sqlite3 "$HOME/.hermes/state.db" "DELETE FROM compression_locks; DELETE FROM session_turn_leases; DELETE FROM gateway_hygiene_state; PRAGMA wal_checkpoint(TRUNCATE);" || true
           fi
