@@ -11,7 +11,7 @@ permissions:
 
 concurrency:
   group: hermes-telegram-gateway
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   gateway:
@@ -19,15 +19,23 @@ jobs:
     timeout-minutes: 350
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          # A queued run needs the latest persisted state from the trusted branch.
+          ref: main
 
       - name: Install Hermes Agent, 9router & Dependencies
         run: |
           sudo apt-get update && sudo apt-get install -y ripgrep jq openssl sqlite3 curl
-          curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+          hermes_ref=2bd378ed1b8d6bf2192cb26e0a55ff3091e6bd19 # v0.23.0
+          installer="$(mktemp)"
+          curl -fsSL --retry 3 --proto '=https' "https://raw.githubusercontent.com/NousResearch/hermes-agent/${hermes_ref}/scripts/install.sh" -o "$installer"
+          echo "abf338605dae6dd28d101673ac6aed7995c955745db46d47676bc591a7957209  $installer" | sha256sum -c -
+          bash "$installer" --commit "$hermes_ref" --non-interactive
+          rm -f "$installer"
           export PATH="$HOME/.local/bin:$HOME/.hermes/node/bin:$PATH"
-          npm install -g 9router@latest @llmtrim/cli@latest || npm install -g 9router@latest
-          uv tool install https://github.com/Panniantong/Agent-Reach/archive/main.zip || true
+          npm install -g 9router@0.5.112 @llmtrim/cli@0.13.4 || npm install -g 9router@0.5.112
+          uv tool install https://github.com/Panniantong/Agent-Reach/archive/47898829204ad27521d8a1719e3aeca3b8a3e0ca.zip || true
 
       - name: Restore Encrypted Hermes & 9router State
         env:
@@ -70,14 +78,38 @@ jobs:
         run: |
           export PATH="$HOME/.local/bin:$HOME/.hermes/bin:$HOME/.hermes/hermes-agent/.hermes/bin:$HOME/.hermes/node/bin:$(npm prefix -g)/bin:$PATH"
           nohup 9router --tray --skip-update -n -H 127.0.0.1 -p 20128 >/tmp/9router.log 2>&1 &
+          router_ready() {
+            local status
+            status="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 2 http://127.0.0.1:20128/v1/models 2>/dev/null)" || return 1
+            [[ "$status" == 200 || "$status" == 401 ]]
+          }
           for i in $(seq 1 30); do
-            if curl -sf -H "Authorization: Bearer sk-f4d354ec9c488438-thqt00-82856ac7" http://127.0.0.1:20128/v1/models >/dev/null 2>&1; then
-              echo "9router ready on 127.0.0.1:20128"
-              break
-            fi
+            if router_ready; then break; fi
             sleep 1
           done
-          timeout --signal=SIGTERM 19200s hermes gateway run || true
+          if ! router_ready; then
+            echo "::error::9router HTTP endpoint did not become ready"
+            exit 1
+          fi
+          timeout --signal=SIGTERM 19200s hermes gateway run &
+          gateway_pid=$!
+          (
+            while kill -0 "$gateway_pid" 2>/dev/null; do
+              router_http=unreachable
+              if router_ready; then router_http=ready; fi
+              printf 'HERMES_HEARTBEAT %s gateway_process=running router_http=%s\n' "$(date -u +%FT%TZ)" "$router_http"
+              sleep 30
+            done
+          ) &
+          heartbeat_pid=$!
+          gateway_status=0
+          wait "$gateway_pid" || gateway_status=$?
+          kill "$heartbeat_pid" 2>/dev/null || true
+          wait "$heartbeat_pid" 2>/dev/null || true
+          printf 'HERMES_CYCLE_END %s exit=%s\n' "$(date -u +%FT%TZ)" "$gateway_status"
+          if [[ "$gateway_status" != 124 ]]; then
+            echo "::warning::Hermes gateway stopped before the cycle timed out"
+          fi
 
       - name: Persist Updated State & Re-dispatch Next Cycle
         if: success()
