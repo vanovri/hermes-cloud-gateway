@@ -28,6 +28,14 @@ Untuk membaca riwayat chat dan eksekusi command dari jendela GUI Codex atau CLI 
   ```bash
   ~/.hermes/bin/codex-laptop "instruksi lengkap untuk Codex"
   ```
+- **Lanjutkan semua sesi Codex yang berhenti karena Usage Limit / Tanda Seru (`--resume-limited`)**:
+  ```bash
+  ~/.hermes/bin/codex-laptop --resume-limited "lanjut"
+  ```
+- **Jadwalkan Auto-Resume di Laptop saat Usage Limit Reset (`--schedule <HH:MM>`)** *(Tahan rotasi runner GitHub Actions & auto-retry)*:
+  ```bash
+  ~/.hermes/bin/codex-laptop --schedule "18:36" "lanjut"
+  ```
 - **Lanjutkan sesi Codex paling terakhir (`--last`)**:
   ```bash
   ~/.hermes/bin/codex-laptop --last "instruksi lanjutan untuk Codex"

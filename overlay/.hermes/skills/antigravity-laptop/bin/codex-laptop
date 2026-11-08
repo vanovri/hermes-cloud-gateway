@@ -21,22 +21,34 @@ if ! command -v cua >/dev/null 2>&1; then
   curl -fsSL https://cua.ai/install.sh | sh -s -- --cli-only --yes --no-onboarding >/dev/null 2>&1
 fi
 if [ $# -eq 0 ]; then
-  echo "Usage: codex-laptop [--status | --last <prompt> | --session <id> <prompt> | --queue <id> <prompt> | --cd <dir> <prompt> | <prompt>]"
+  echo "Usage: codex-laptop [--status | --resume-limited [prompt] | --schedule <HH:MM> [prompt] | --last <prompt> | --session <id> [prompt] | --queue <id> [prompt] | --cd <dir> <prompt> | <prompt>]"
   exit 1
 fi
 if [ "$1" = "--status" ] || [ "$1" = "status" ]; then
   PAYLOAD="__STATUS__"
+elif [ "$1" = "--resume-limited" ] || [ "$1" = "--limited" ] || [ "$1" = "--tanda-seru" ]; then
+  shift 1
+  PROMPT_ARG="${*:-lanjut}"
+  PAYLOAD="__RESUME_LIMITED__:${PROMPT_ARG}"
+elif [ "$1" = "--schedule" ] || [ "$1" = "--at" ]; then
+  TIME_SPEC="$2"
+  shift 2
+  PROMPT_ARG="${*:-lanjut}"
+  PAYLOAD="__SCHEDULE__:${TIME_SPEC}:${PROMPT_ARG}"
 elif [ "$1" = "--last" ] || [ "$1" = "-l" ]; then
   shift 1
-  PAYLOAD="__LAST__:$*"
+  PROMPT_ARG="${*:-lanjut}"
+  PAYLOAD="__LAST__:${PROMPT_ARG}"
 elif [ "$1" = "--conversation" ] || [ "$1" = "--session" ] || [ "$1" = "-r" ] || [ "$1" = "-s" ]; then
   CONV_ID="$2"
   shift 2
-  PAYLOAD="__CONV__:${CONV_ID}:$*"
+  PROMPT_ARG="${*:-lanjut}"
+  PAYLOAD="__CONV__:${CONV_ID}:${PROMPT_ARG}"
 elif [ "$1" = "--queue" ] || [ "$1" = "-q" ]; then
   CONV_ID="$2"
   shift 2
-  PAYLOAD="__QUEUE__:${CONV_ID}:$*"
+  PROMPT_ARG="${*:-lanjut}"
+  PAYLOAD="__QUEUE__:${CONV_ID}:${PROMPT_ARG}"
 elif [ "$1" = "--cd" ] || [ "$1" = "-C" ]; then
   WORK_DIR="$2"
   shift 2

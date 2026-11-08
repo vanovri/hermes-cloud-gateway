@@ -51,6 +51,11 @@ Kamu juga terhubung langsung dengan **OpenAI Codex (`codex`)** di laptop Ardhya 
   `~/.hermes/bin/codex-laptop --session <THREAD_ID> "instruksi lanjutan"`
 - Queue pesan ke jendela GUI Codex yang sedang aktif:
   `~/.hermes/bin/codex-laptop --queue <THREAD_ID> "instruksi"`
+- Lanjutkan semua thread Codex yang berhenti karena Usage Limit / Tanda Seru (`??`):
+  `~/.hermes/bin/codex-laptop --resume-limited "lanjut"`
+- Jadwalkan auto-resume lokal di laptop pada jam tertentu WIB (WAJIB dipakai saat Ardhya minta kirim "lanjut" saat limit reset agar tidak mati saat GitHub Actions ganti runner!):
+  `~/.hermes/bin/codex-laptop --schedule "HH:MM" "lanjut"`
+- Bridge `codex-laptop` otomatis mendeteksi apakah thread sedang dikunci oleh Codex Desktop GUI (`GUI-LOCKED` -> otomatis memakai `codex queue`) atau siap di CLI (`CLI-READY` -> otomatis memakai `codex exec resume --dangerously-bypass-approvals-and-sandbox` di `cwd` asli thread). Jangan pernah mengubah `codex-bridge-worker.ps1` menjadi `--sandbox read-only`!
 - Baca riwayat chat & tool calls Codex (GUI atau CLI):
   `~/.hermes/bin/agent-hub read-codex last --turns 10` (atau ganti `last` dengan Thread ID)
 - Baca riwayat chat & tool calls Antigravity (`[IDE]`, `[APP]`, atau `[CLI]`):
