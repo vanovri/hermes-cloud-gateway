@@ -72,24 +72,60 @@ jobs:
           if [ -f "$HOME/.9router/db/data.sqlite" ]; then
             sqlite3 "$HOME/.9router/db/data.sqlite" "PRAGMA wal_checkpoint(TRUNCATE);" || true
           fi
-          rm -f "$HOME/.hermes/cron/".*.lock 2>/dev/null || true
+          rm -f "$HOME/.hermes/cron/".*.lock "$HOME/.hermes/cron/"*.lock "$HOME/.hermes/cron/"*.pid "$HOME/.hermes/cron/catch_up_occurrences" 2>/dev/null || true
+          rm -rf "$HOME/.hermes/cron/admissions/"* "$HOME/.hermes/cron/external-workers/"* 2>/dev/null || true
           export PATH="$HOME/.local/bin:$HOME/.hermes/bin:$HOME/.hermes/hermes-agent/.hermes/bin:$HOME/.hermes/node/bin:$PATH"
           hermes config set terminal.backend local || true
           hermes config set platforms.telegram.extra.drop_pending_on_cold_boot false || true
           hermes config set auxiliary.compression.provider auto || true
           hermes config set mcp_servers.notion.enabled false || true
           python3 -c '
-import yaml, pathlib
-p = pathlib.Path.home() / ".hermes/config.yaml"
+import yaml, json, pathlib, datetime
+home = pathlib.Path.home()
+p = home / ".hermes/config.yaml"
 if p.exists():
     d = yaml.safe_load(p.read_text()) or {}
-    d.pop("fallback_providers", None)
-    if isinstance(d.get("auxiliary"), dict) and isinstance(d["auxiliary"].get("compression"), dict):
-        d["auxiliary"]["compression"]["provider"] = "auto"
-        d["auxiliary"]["compression"].pop("model", None)
+    d["fallback_providers"] = [
+        {"provider": "custom", "model": "ag/gemini-3.8-flash", "base_url": "http://127.0.0.1:20128/v1"},
+        {"provider": "custom", "model": "ag/gemini-3-flash", "base_url": "http://127.0.0.1:20128/v1"},
+        {"provider": "groq", "model": "openai/gpt-oss-120b"},
+    ]
+    d.setdefault("auxiliary", {})["compression"] = {
+        "provider": "auto",
+        "timeout": 60,
+        "fallback_chain": [
+            {"provider": "custom", "model": "ag/gemini-3.8-flash", "base_url": "http://127.0.0.1:20128/v1", "timeout": 60},
+            {"provider": "custom", "model": "ag/gemini-3-flash", "base_url": "http://127.0.0.1:20128/v1", "timeout": 60},
+            {"provider": "custom", "model": "xai/grok-code-fast-1", "base_url": "http://127.0.0.1:20128/v1", "timeout": 60},
+            {"provider": "groq", "model": "openai/gpt-oss-120b", "timeout": 60},
+            {"provider": "openrouter", "model": "google/gemini-2.5-flash", "timeout": 60},
+        ],
+    }
     if isinstance(d.get("mcp_servers"), dict) and "notion" in d["mcp_servers"]:
         d["mcp_servers"]["notion"]["enabled"] = False
     p.write_text(yaml.safe_dump(d, sort_keys=False))
+
+jf = home / ".hermes/cron/jobs.json"
+if jf.exists():
+    jdata = json.loads(jf.read_text())
+    now_ts = datetime.datetime.now(datetime.timezone.utc).timestamp()
+    for job in jdata.get("jobs", []):
+        job["fire_claim"] = None
+        rep = job.get("repeat") or {}
+        sched = job.get("schedule") or {}
+        is_oneshot = (rep.get("times") == 1) or (sched.get("kind") in ("once", "at"))
+        if is_oneshot and (rep.get("completed", 0) >= 1):
+            job["enabled"] = False
+            job["state"] = "completed"
+        nra = job.get("next_run_at")
+        if nra and is_oneshot:
+            try:
+                if datetime.datetime.fromisoformat(nra).timestamp() < now_ts - 600:
+                    job["enabled"] = False
+                    job["state"] = "expired"
+            except Exception:
+                pass
+    jf.write_text(json.dumps(jdata, indent=2, ensure_ascii=False))
 ' || true
 
       - name: Start 9router Token Balancer & Run Hermes Gateway (5h 20m cycle)
@@ -152,7 +188,7 @@ if p.exists():
             .hermes/config.yaml \
             .hermes/SOUL.md \
             .hermes/bin \
-            .hermes/cron \
+            .hermes/cron/jobs.json \
             .hermes/memories \
             .hermes/skills \
             .hermes/state.db \
