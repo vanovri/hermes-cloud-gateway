@@ -200,9 +200,10 @@ def select_candidate(base, candidates):
 
 
 class GitHubArtifacts:
-    def __init__(self, workflow='hermes.yml'):
+    def __init__(self, workflow='hermes.yml', *, events=frozenset({'workflow_dispatch', 'schedule'})):
         self.repo = os.environ['GITHUB_REPOSITORY']
         self.repo_id = int(os.environ['GITHUB_REPOSITORY_ID'])
+        self.events = events
         self.workflow_id = self.api(f'repos/{self.repo}/actions/workflows/{workflow}')['id']
 
     def api(self, path, *, paginate=False):
@@ -238,7 +239,7 @@ class GitHubArtifacts:
                     endpoint += f'/attempts/{int(match[3])}'
                 producer = self.api(endpoint)
                 if (producer['workflow_id'] != self.workflow_id or producer['status'] != 'completed'
-                        or producer['event'] not in {'workflow_dispatch', 'schedule'}):
+                        or producer['event'] not in self.events):
                     continue
                 if identity.get('id') != run_id:
                     raise ValueError('Recovery artifact name and producer disagree')

@@ -27,7 +27,7 @@ def create(folder):
 
 
 def verify(folder):
-    client = GitHubArtifacts('verify.yml')
+    client = GitHubArtifacts('verify.yml', events=frozenset({'push', 'workflow_dispatch'}))
     candidates = [(artifact, match) for artifact, match in client.candidates(1)
                   if artifact['workflow_run']['head_sha'] == os.environ['GITHUB_SHA']]
     if not candidates:

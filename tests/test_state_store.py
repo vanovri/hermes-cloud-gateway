@@ -216,6 +216,7 @@ class StateStoreTests(unittest.TestCase):
     def test_artifact_catalog_paginates_and_ignores_untrusted_workflows(self):
         client = object.__new__(store.GitHubArtifacts)
         client.repo, client.repo_id, client.workflow_id = 'synthetic/repo', 1, 7
+        client.events = frozenset({'workflow_dispatch', 'schedule'})
         def entry(seq, producer, repository=1):
             return {'name': f'hermes-recovery-bundle-{seq}-{producer}-1', 'expired': False,
                     'workflow_run': {'id': producer, 'repository_id': repository,
