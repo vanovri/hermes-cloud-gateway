@@ -83,7 +83,7 @@ def configure(home: Path) -> dict:
     atomic_write(config_path, yaml.safe_dump(config, sort_keys=False, allow_unicode=True))
 
     path = home / "cron/jobs.json"
-    data = json.loads(path.read_text())
+    data = json.loads(path.read_text()) if path.exists() else {"jobs": []}
     added = ensure_migrated_jobs(data.setdefault("jobs", []), datetime.now(timezone(timedelta(hours=7))))
     changed = []
     for job in data.get("jobs", []):

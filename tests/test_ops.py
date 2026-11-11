@@ -18,6 +18,19 @@ import startup_evidence
 
 
 class OpsTests(unittest.TestCase):
+    def test_cloud_without_a_cron_store_migrates_existing_active_jobs(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            (home / "ops").mkdir()
+            (home / "ops/startup_prompt.txt").write_text("structured evidence prompt")
+            (home / "config.yaml").write_text("model: {provider: custom, default: existing}\n")
+            result = configure(home)
+            jobs = json.loads((home / "cron/jobs.json").read_text())["jobs"]
+            self.assertIn("2a8e765b6611", result["migrated_missing_jobs"])
+            self.assertTrue(all(job["deliver"] == "telegram" and job["origin"] is None for job in jobs))
+            self.assertTrue(all(job["next_run_at"] > job["created_at"] for job in jobs))
+            self.assertFalse(configure(home)["migrated_missing_jobs"])
+
     def test_sqlite_wal_and_operational_state_survive_restore(self):
         with tempfile.TemporaryDirectory() as td:
             home = Path(td) / "user"
