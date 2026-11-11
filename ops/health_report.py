@@ -5,10 +5,12 @@ import json
 import sqlite3
 import urllib.request
 from pathlib import Path
+from live_control import readiness
 
 
 def report(home: Path) -> dict:
     data = {"model_inference_tested": False, "message_sent": False}
+    data["live_control"] = readiness(home)
     state_path = home / "gateway_state.json"
     if state_path.exists():
         state = json.loads(state_path.read_text())

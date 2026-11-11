@@ -8,6 +8,7 @@ on:
 permissions:
   contents: write
   actions: write
+  checks: write
 
 concurrency:
   group: hermes-telegram-gateway
@@ -80,6 +81,8 @@ jobs:
 
       - name: Run gateway with bounded graceful shutdown
         id: gateway
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           export PATH="$HOME/.local/bin:$HOME/.hermes/bin:$HOME/.hermes/hermes-agent/.hermes/bin:$HOME/.hermes/node/bin:$(npm prefix -g)/bin:$PATH"
           9router --tray --skip-update -n -H 127.0.0.1 -p 20128 >/tmp/9router.log 2>&1 &
@@ -99,6 +102,7 @@ jobs:
           fi
           timeout --signal=SIGTERM --kill-after=180s 19200s hermes gateway run &
           gateway_pid=$!
+          deployed_sha="$(git rev-parse HEAD)"
           (
             while kill -0 "$gateway_pid" 2>/dev/null; do
               router_http=unreachable
@@ -107,7 +111,10 @@ jobs:
               if ! python3 ops/health_report.py --home "$HOME/.hermes"; then
                 echo "::warning::Detailed health probe failed; process liveness is not full readiness"
               fi
-              sleep 300
+              if ! python3 ops/publish_readiness.py --home "$HOME/.hermes" --sha "$deployed_sha"; then
+                echo "::warning::Could not publish runtime readiness receipt"
+              fi
+              sleep 60
             done
           ) &
           heartbeat_pid=$!
