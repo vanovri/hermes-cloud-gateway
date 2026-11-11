@@ -60,11 +60,10 @@ jobs:
         id: restore
         env:
           HERMES_BUNDLE_KEY: ${{ secrets.HERMES_BUNDLE_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           umask 077
-          openssl enc -d -aes-256-cbc -pbkdf2 -in hermes-bundle.enc -out /tmp/hermes-restore.tar.gz -pass env:HERMES_BUNDLE_KEY
-          tar -xzf /tmp/hermes-restore.tar.gz -C "$HOME"
-          rm -f /tmp/hermes-restore.tar.gz
+          python3 ops/state_store.py restore --work "$RUNNER_TEMP/hermes-state" --home "$HOME"
           if [ -d overlay/.claude ]; then
             mkdir -p "$HOME/.claude"
             cp -rf overlay/.claude/. "$HOME/.claude/"
@@ -137,7 +136,7 @@ jobs:
             exit 1
           fi
 
-      - name: Snapshot and publish encrypted state
+      - name: Snapshot and seal next encrypted state generation
         id: persist
         if: ${{ always() && steps.restore.outcome == 'success' }}
         env:
@@ -145,30 +144,36 @@ jobs:
         run: |
           umask 077
           test -f /tmp/hermes-restored-ok
-          python3 ops/state_bundle.py --home "$HOME" --output /tmp/hermes-state.tar.gz
-          openssl enc -aes-256-cbc -pbkdf2 -salt -in /tmp/hermes-state.tar.gz -out /tmp/hermes-recovery.enc -pass env:HERMES_BUNDLE_KEY
-          openssl enc -d -aes-256-cbc -pbkdf2 -in /tmp/hermes-recovery.enc -pass env:HERMES_BUNDLE_KEY | tar -tzf - >/dev/null
-          test "$(stat -c %s /tmp/hermes-recovery.enc)" -lt 99614720
-          cp /tmp/hermes-recovery.enc hermes-bundle.enc
-          rm -f /tmp/hermes-state.tar.gz
-          git config user.name hermes-bot
-          git config user.email hermes-bot@users.noreply.github.com
-          git add hermes-bundle.enc
-          git commit -m "chore: persist verified Hermes state [skip ci]"
-          git pull --rebase origin main
-          git push
+          python3 ops/state_store.py seal --work "$RUNNER_TEMP/hermes-state" --home "$HOME"
 
-      - name: Retain encrypted recovery if publishing fails
-        if: ${{ always() && steps.persist.outcome == 'failure' }}
+      - name: Retain encrypted recovery before publishing state refs
+        id: recovery
+        if: ${{ always() && steps.persist.outcome == 'success' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: hermes-encrypted-recovery-${{ github.run_id }}
-          path: /tmp/hermes-recovery.enc
-          retention-days: 2
-          if-no-files-found: warn
+          name: hermes-recovery-bundle-${{ steps.persist.outputs.state_seq }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/hermes-state/publish/hermes-bundle.enc
+            ${{ runner.temp }}/hermes-state/publish/hermes-bundle.meta.json
+          retention-days: 5
+          if-no-files-found: error
+
+      - name: Publish parentless state commit and rotate backup refs atomically
+        id: publish
+        if: ${{ always() && steps.recovery.outcome == 'success' }}
+        run: python3 ops/state_store.py publish --work "$RUNNER_TEMP/hermes-state"
+
+      - name: Remove this recovery artifact only after confirmed state publication
+        if: ${{ always() && steps.publish.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if ! gh api --method DELETE "repos/${GITHUB_REPOSITORY}/actions/artifacts/${{ steps.recovery.outputs.artifact-id }}"; then
+            echo '::warning::Published recovery artifact retained until its five-day expiry'
+          fi
 
       - name: Queue next cycle after successful persistence
-        if: ${{ always() && steps.persist.outcome == 'success' && steps.gateway.outcome == 'success' }}
+        if: ${{ always() && steps.publish.outcome == 'success' && steps.gateway.outcome == 'success' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh workflow run hermes.yml

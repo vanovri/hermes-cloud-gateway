@@ -3,6 +3,7 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+  actions: read
 jobs:
   restore-drill:
     runs-on: ubuntu-latest
@@ -11,23 +12,32 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - name: Prepare isolated verification
         run: |
-          sudo apt-get update
-          sudo apt-get install -y python3-yaml sqlite3 openssl
+          missing_packages=()
+          for command in sqlite3 openssl; do
+            if ! command -v "$command" >/dev/null 2>&1; then missing_packages+=("$command"); fi
+          done
+          if ! python3 -c 'import yaml' >/dev/null 2>&1; then missing_packages+=(python3-yaml); fi
+          if (( ${#missing_packages[@]} )); then
+            sudo timeout --kill-after=10s 90s apt-get update
+            sudo timeout --kill-after=10s 90s apt-get install -y "${missing_packages[@]}"
+          fi
           python3 -m unittest discover -s tests -v
       - name: Restore and snapshot actual encrypted state in isolation
         env:
           HERMES_BUNDLE_KEY: ${{ secrets.HERMES_BUNDLE_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
           umask 077
           verification_root="$(mktemp -d "$RUNNER_TEMP/hermes-preflight.XXXXXX")"
           trap 'rm -rf "$verification_root"' EXIT
-          openssl enc -d -aes-256-cbc -pbkdf2 -in hermes-bundle.enc -out "$verification_root/restore.tar.gz" -pass env:HERMES_BUNDLE_KEY
-          mkdir "$verification_root/user"
-          tar -xzf "$verification_root/restore.tar.gz" -C "$verification_root/user"
+          python3 ops/state_store.py restore --read-only --work "$verification_root/state" --home "$verification_root/user"
           cp -rf overlay/.hermes/. "$verification_root/user/.hermes/"
           python3 ops/runtime_config.py --home "$verification_root/user/.hermes"
-          python3 ops/state_bundle.py --home "$verification_root/user" --output "$verification_root/proof.tar.gz"
-          openssl enc -aes-256-cbc -pbkdf2 -salt -in "$verification_root/proof.tar.gz" -out "$verification_root/proof.enc" -pass env:HERMES_BUNDLE_KEY
-          openssl enc -d -aes-256-cbc -pbkdf2 -in "$verification_root/proof.enc" -pass env:HERMES_BUNDLE_KEY | tar -tzf - >/dev/null
-          echo 'RESTORE_DRILL_OK gateway_started=false model_called=false message_sent=false'
+          python3 ops/state_store.py seal --work "$verification_root/state" --home "$verification_root/user"
+          echo 'RESTORE_DRILL_OK inner_generation_verified=true production_refs_changed=false gateway_started=false model_called=false message_sent=false'
+      - name: Verify real recovery artifact API with the synthetic CI fixture
+        env:
+          HERMES_BUNDLE_KEY: hermes-synthetic-smoke
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 ops/state_recovery_drill.py verify --folder "$RUNNER_TEMP/hermes-state-smoke"

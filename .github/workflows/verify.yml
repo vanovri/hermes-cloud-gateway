@@ -22,3 +22,16 @@ jobs:
           fi
           python3 -m unittest discover -s tests -v
           python3 -m compileall -q ops overlay/.hermes/ops overlay/.hermes/scripts
+      - name: Seal synthetic recovery fixture
+        env:
+          HERMES_BUNDLE_KEY: hermes-synthetic-smoke
+        run: python3 ops/state_recovery_drill.py create --folder "$RUNNER_TEMP/hermes-state-smoke"
+      - name: Publish synthetic fixture for the isolated artifact API drill
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: hermes-recovery-bundle-1-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/hermes-state-smoke/publish/hermes-bundle.enc
+            ${{ runner.temp }}/hermes-state-smoke/publish/hermes-bundle.meta.json
+          retention-days: 1
+          if-no-files-found: error

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import closing
 import hashlib
 import json
 import os
@@ -26,8 +27,8 @@ def persistent_file(path: Path) -> bool:
 
 
 def sqlite_backup(source: Path, target: Path) -> None:
-    with sqlite3.connect(f"file:{source}?mode=ro", uri=True, timeout=15) as original:
-        with sqlite3.connect(target) as snapshot:
+    with closing(sqlite3.connect(f"file:{source}?mode=ro", uri=True, timeout=15)) as original:
+        with closing(sqlite3.connect(target)) as snapshot:
             original.backup(snapshot, pages=256, sleep=0.1)
             result = snapshot.execute("PRAGMA quick_check").fetchone()[0]
             if result != "ok":
