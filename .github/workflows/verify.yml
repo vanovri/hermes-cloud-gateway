@@ -16,7 +16,9 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - run: |
-          sudo apt-get update
-          sudo apt-get install -y python3-yaml
+          if ! python3 -c 'import yaml' >/dev/null 2>&1; then
+            sudo timeout --kill-after=10s 90s apt-get update
+            sudo timeout --kill-after=10s 90s apt-get install -y python3-yaml
+          fi
           python3 -m unittest discover -s tests -v
           python3 -m compileall -q ops overlay/.hermes/ops overlay/.hermes/scripts

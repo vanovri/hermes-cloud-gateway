@@ -31,8 +31,15 @@ jobs:
 
       - name: Install pinned Hermes and dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ripgrep jq openssl sqlite3 curl python3-yaml
+          missing_packages=()
+          for command in jq openssl sqlite3 curl; do
+            if ! command -v "$command" >/dev/null 2>&1; then missing_packages+=("$command"); fi
+          done
+          if ! python3 -c 'import yaml' >/dev/null 2>&1; then missing_packages+=(python3-yaml); fi
+          if (( ${#missing_packages[@]} )); then
+            sudo timeout --kill-after=10s 90s apt-get update
+            sudo timeout --kill-after=10s 90s apt-get install -y "${missing_packages[@]}"
+          fi
           hermes_ref=2bd378ed1b8d6bf2192cb26e0a55ff3091e6bd19
           installer="$(mktemp)"
           curl -fsSL --retry 3 --proto '=https' "https://raw.githubusercontent.com/NousResearch/hermes-agent/${hermes_ref}/scripts/install.sh" -o "$installer"
