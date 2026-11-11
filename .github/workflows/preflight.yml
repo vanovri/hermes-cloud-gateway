@@ -1,0 +1,33 @@
+name: Verify encrypted Hermes restore without starting a gateway
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  restore-drill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - name: Prepare isolated verification
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-yaml sqlite3 openssl
+          python3 -m unittest discover -s tests -v
+      - name: Restore and snapshot actual encrypted state in isolation
+        env:
+          HERMES_BUNDLE_KEY: ${{ secrets.HERMES_BUNDLE_KEY }}
+        shell: bash
+        run: |
+          umask 077
+          verification_root="$(mktemp -d "$RUNNER_TEMP/hermes-preflight.XXXXXX")"
+          trap 'rm -rf "$verification_root"' EXIT
+          openssl enc -d -aes-256-cbc -pbkdf2 -in hermes-bundle.enc -out "$verification_root/restore.tar.gz" -pass env:HERMES_BUNDLE_KEY
+          mkdir "$verification_root/user"
+          tar -xzf "$verification_root/restore.tar.gz" -C "$verification_root/user"
+          cp -rf overlay/.hermes/. "$verification_root/user/.hermes/"
+          python3 ops/runtime_config.py --home "$verification_root/user/.hermes"
+          python3 ops/state_bundle.py --home "$verification_root/user" --output "$verification_root/proof.tar.gz"
+          openssl enc -aes-256-cbc -pbkdf2 -salt -in "$verification_root/proof.tar.gz" -out "$verification_root/proof.enc" -pass env:HERMES_BUNDLE_KEY
+          openssl enc -d -aes-256-cbc -pbkdf2 -in "$verification_root/proof.enc" -pass env:HERMES_BUNDLE_KEY | tar -tzf - >/dev/null
+          echo 'RESTORE_DRILL_OK gateway_started=false model_called=false message_sent=false'

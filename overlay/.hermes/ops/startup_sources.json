@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "note": "Domain authority only. Inclusion does not establish eligibility, an open application window, or available funding.",
+  "hosts": {
+    "newenergynexus.id": "New Energy Nexus Indonesia",
+    "newenergynexus.com": "New Energy Nexus",
+    "milkywire.com": "Milkywire",
+    "genzero.co": "GenZero"
+  }
+}
