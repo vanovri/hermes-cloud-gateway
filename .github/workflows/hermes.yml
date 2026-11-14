@@ -2,6 +2,11 @@ name: Hermes 24x7 Cloud Gateway
 
 on:
   workflow_dispatch:
+    inputs:
+      verify_delivery:
+        description: 'Run one model probe and send the owner a Telegram recovery test'
+        type: boolean
+        default: false
   schedule:
     - cron: '25 */5 * * *'
 
@@ -89,6 +94,7 @@ jobs:
         id: gateway
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERIFY_DELIVERY: ${{ inputs.verify_delivery || false }}
         run: |
           export PATH="$HOME/.local/bin:$HOME/.hermes/bin:$HOME/.hermes/hermes-agent/.hermes/bin:$HOME/.hermes/node/bin:$(npm prefix -g)/bin:$PATH"
           9router --tray --skip-update -n -H 127.0.0.1 -p 20128 >/tmp/9router.log 2>&1 &
@@ -110,6 +116,7 @@ jobs:
           gateway_pid=$!
           deployed_sha="$(git rev-parse HEAD)"
           (
+            unhealthy_ticks=0
             while kill -0 "$gateway_pid" 2>/dev/null; do
               router_http=unreachable
               if router_ready; then router_http=ready; fi
@@ -120,10 +127,23 @@ jobs:
               if ! python3 ops/publish_readiness.py --home "$HOME/.hermes" --sha "$deployed_sha"; then
                 echo "::warning::Could not publish runtime readiness receipt"
               fi
+              if router_ready && python3 -c 'import sys; from pathlib import Path; sys.path.insert(0, "ops"); from live_control import readiness; sys.exit(0 if readiness(Path.home() / ".hermes")["ready"] else 1)'; then
+                unhealthy_ticks=0
+              else
+                unhealthy_ticks=$((unhealthy_ticks + 1))
+              fi
+              if (( unhealthy_ticks >= 5 )); then
+                echo "::warning::Gateway unhealthy for five probes; saving state before recovery"
+                kill -TERM "$gateway_pid" 2>/dev/null || true
+                break
+              fi
               sleep 60
             done
           ) &
           heartbeat_pid=$!
+          if [[ "$VERIFY_DELIVERY" == true ]]; then
+            python3 ops/functional_smoke.py > /tmp/hermes-functional-smoke.log 2>&1 &
+          fi
           gateway_status=0
           wait "$gateway_pid" || gateway_status=$?
           kill "$heartbeat_pid" 2>/dev/null || true
@@ -171,7 +191,6 @@ jobs:
           if ! gh api --method DELETE "repos/${GITHUB_REPOSITORY}/actions/artifacts/${{ steps.recovery.outputs.artifact-id }}"; then
             echo '::warning::Published recovery artifact retained until its five-day expiry'
           fi
-
       - name: Queue next cycle after successful persistence
         if: ${{ always() && steps.publish.outcome == 'success' && steps.gateway.outcome == 'success' }}
         env:

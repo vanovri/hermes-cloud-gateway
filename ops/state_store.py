@@ -156,6 +156,9 @@ def commit_bundle(repo, bundle, meta):
 
 
 def publish(repo, bundle, meta, expected, *, attempts=3):
+    # Each runner starts shallow; the parentless backup commit is not in live's history.
+    if expected[REFS[1]]:
+        git(repo, 'fetch', '--no-tags', '--depth=1', 'origin', expected[REFS[1]])
     oid = commit_bundle(repo, bundle, meta)
     desired = {REFS[0]: oid, REFS[1]: expected[REFS[0]], REFS[2]: expected[REFS[1]]}
     for attempt in range(attempts):

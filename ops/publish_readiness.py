@@ -17,8 +17,9 @@ def publish(home: Path, sha: str) -> dict:
     record_path = home / "state/runtime_readiness.json"
     previous = json.loads(record_path.read_text()) if record_path.exists() else {}
     same_run = previous.get("run_id") == run_id
+    age = (datetime.now(timezone.utc) - datetime.fromisoformat(previous["observed_at"])).total_seconds() if same_run else 0
     if (not run_id or (not snapshot["ready"] and not same_run)
-            or (same_run and previous.get("ready") == snapshot["ready"])):
+            or (same_run and previous.get("ready") == snapshot["ready"] and age < 180)):
         return snapshot
     payload = {"name": "Hermes live runtime readiness", "status": "completed",
                "conclusion": "success" if snapshot["ready"] else "failure",

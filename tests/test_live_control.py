@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timedelta, timezone
 import os
 from pathlib import Path
 import socket
@@ -55,6 +56,20 @@ class LiveControlTests(unittest.TestCase):
                 publish(Path(td), "a" * 40)
                 self.assertIn("PATCH", request.call_args.args[0])
                 self.assertEqual(json.loads(request.call_args.kwargs["input"])["conclusion"], "failure")
+
+    def test_healthy_receipt_refreshes_after_three_minutes(self):
+        with tempfile.TemporaryDirectory() as td, patch.dict(os.environ, {"GITHUB_RUN_ID":"synthetic-run","GITHUB_REPOSITORY":"example/repo"}):
+            ready = {"ready":True,"control_state":"ready","telegram_adapter_state":"connected"}
+            with patch("publish_readiness.readiness", side_effect=lambda home: ready.copy()), patch("publish_readiness.subprocess.run") as request:
+                request.return_value.stdout = '{"id": 123}'
+                publish(Path(td), "a" * 40)
+                receipt = Path(td) / "state/runtime_readiness.json"
+                record = json.loads(receipt.read_text())
+                record["observed_at"] = (datetime.now(timezone.utc) - timedelta(minutes=4)).isoformat()
+                receipt.write_text(json.dumps(record))
+                publish(Path(td), "a" * 40)
+                self.assertEqual(request.call_count, 2)
+                self.assertIn("PATCH", request.call_args.args[0])
 
 
 if __name__ == "__main__":

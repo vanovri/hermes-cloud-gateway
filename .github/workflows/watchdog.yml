@@ -1,0 +1,27 @@
+name: Hermes gateway recovery watchdog
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: ['Hermes 24x7 Cloud Gateway']
+    types: [completed]
+    branches: [main]
+  schedule:
+    - cron: '*/5 * * * *'
+permissions:
+  contents: read
+  actions: write
+concurrency:
+  group: hermes-recovery-watchdog
+  cancel-in-progress: false
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: main
+      - name: Keep one gateway cycle active
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 ops/watchdog.py

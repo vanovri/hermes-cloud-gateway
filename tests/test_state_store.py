@@ -138,6 +138,32 @@ class StateStoreTests(unittest.TestCase):
             store.publish(self.repo, first, other, context['refs'], attempts=1)
         self.assertEqual(store.remote_refs(self.repo), committed)
 
+    def test_each_rotation_uses_a_fresh_shallow_runner_and_recovers_latest_state(self):
+        commits = []
+        for index in range(4):
+            runner = self.root / f'runner-{index}'
+            store.run(['git', 'clone', '--depth=1', '--single-branch', '--branch', 'main',
+                       self.remote.as_uri(), str(runner)])
+            context = store.reconcile(runner, self.root / f'restore-{index}', artifacts=FakeArtifacts())
+            self.assertEqual(context['base']['state_seq'], index)
+            bundle, meta = self.sealed(context, f'fresh-sealed-{index}')
+            if index == 2:
+                # Match production: a failed third publication leaves an authoritative artifact.
+                context = store.reconcile(runner, self.root / 'heal-third',
+                                          artifacts=FakeArtifacts([(bundle, meta)]))
+                refs = context['refs']
+                self.assertTrue(context['recovered'])
+            else:
+                refs = store.publish(runner, bundle, meta, context['refs'], attempts=1)
+            commits.append(refs[store.REFS[0]])
+            with tarfile.open(context['archive']) as archive:
+                recovered = self.root / f'db-{index}'
+                recovered.write_bytes(archive.extractfile('.hermes/state.db').read())
+            with sqlite3.connect(recovered) as db:
+                self.assertEqual(db.execute('PRAGMA quick_check').fetchone()[0], 'ok')
+                self.assertEqual(db.execute('SELECT content FROM example').fetchone()[0], 'preserved')
+        self.assertEqual(list(store.remote_refs(self.repo).values()), list(reversed(commits[-3:])))
+
     def test_push_timeout_after_server_acceptance_does_not_rotate_twice(self):
         context = self.boot()
         bundle, meta = self.sealed(context)
