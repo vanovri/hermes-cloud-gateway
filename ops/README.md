@@ -1,5 +1,9 @@
 Hermes operational fixes
 
+Production inference uses Google direct gemini-3.5-flash-lite as primary and gemini-3.5-flash as Fallback 1, both on the explicit Google OpenAI-compatible endpoint with key_env=GOOGLE_API_KEY. One OpenRouter free model is permitted only at the end of the chain. Compression and owner-managed research jobs use the Google primary. The legacy fallback_model key and persisted OpenRouter free-model primary overrides cannot reintroduce daily-cap routes.
+
+The pinned native API error handler attempts provider failover on HTTP 429 before credential-pool recovery, classifier branches, or the terminal rate-limit response. It rebuilds the request for the fallback without replaying already completed tools. tests/native_llm_drill.py mocks a primary 429 and proves the native fallback walker and route binder return Fallback 1's response. The drill also validates the pinned core's primary key_env and fallback-entry schemas without network, credentials, or Telegram polling.
+
 The cloud workflow owns Telegram and the scheduled research jobs. The laptop runs the authenticated localrelay profile. Local default cron copies remain paused for rollback.
 
 The upstream Hermes commit stays pinned. apply_core_patches.py checks its replacement contexts before applying narrow changes. The original gateway delivery ledger and cron delivery queue APIs remain intact. Scheduler ticks hold due occurrences until the gateway reports ready. Optional output_validator scripts run before delivery, with their owning profile environment. The startup digest renderer fetches official pages independently and accepts matching short quotes. The delivered dedup state is committed after a confirmed delivery.

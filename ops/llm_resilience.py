@@ -62,5 +62,7 @@ def fresh_payload_rejection(messages):
 
 
 def unhealthy_legacy_override(entry):
+    if entry.get("provider") == "openrouter" and (str(entry.get("model", "")).endswith(":free") or entry.get("model") == "openrouter/free"):
+        return True
     return entry.get("provider") in {"custom", "9router", "groq"} and entry.get("model") in {
         "grok-auto", "ag/gemini-3.8-flash", "ag/gemini-3-flash", "openai/gpt-oss-120b"}

@@ -163,6 +163,17 @@ def apply_llm_resilience(core: Path, source: Path) -> list[Path]:
                  '    if skip_fallback(agent, fb):\n        return True\n'
                  '    if fb_key in unavailable:\n')
     recovery = core / "agent/turn_recovery.py"
+    api_error = core / "agent/turn_api_error.py"
+    replace_once(api_error, '    _recovered, active_system_prompt = recover_before_classification(\n',
+                 '    # Account-level HTTP 429 must leave this provider before pool rotation or terminal quota copy.\n'
+                 '    if getattr(api_error, "status_code", None) == 429:\n'
+                 '        if agent._try_activate_fallback(reason=FailoverReason.rate_limit):\n'
+                 '            from agent.conversation_loop import _arm_fallback_restart\n'
+                 '            active_system_prompt = _arm_fallback_restart(agent, api_messages, active_system_prompt, _retry)\n'
+                 '            retry_count = 0\n'
+                 '            compression_attempts = 0\n'
+                 '            return _verdict("break")\n\n'
+                 '    _recovered, active_system_prompt = recover_before_classification(\n')
     replace_once(recovery, 'or (_is_transport_failure and retry_count >= 2)\n',
                  'or (_is_transport_failure and (getattr(agent, "platform", None) == "telegram" or retry_count >= 2))\n')
     # Do not sleep for minutes on an interactive route. The blocked route is left
@@ -200,7 +211,7 @@ def apply_llm_resilience(core: Path, source: Path) -> list[Path]:
                  '        if unhealthy_legacy_override(persisted):\n'
                  '            logger.warning("Ignoring unavailable legacy model override; using configured route")\n'
                  '            return\n')
-    return [helper, prompt, request, fallback, recovery, overflow, gateway, init, cache]
+    return [helper, prompt, request, fallback, recovery, api_error, overflow, gateway, init, cache]
 
 
 if __name__ == "__main__":

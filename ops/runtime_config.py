@@ -12,6 +12,9 @@ from io_utils import atomic_text
 
 RESEARCH_JOBS = {"ee5cdd1455a1", "decb1f7e8447", "357fd2ff763c", "6f17c39ca284", "2a8e765b6611"}
 STARTUP_JOB = "2a8e765b6611"
+GOOGLE_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
+PRIMARY_MODEL = "gemini-3.5-flash-lite"
+FALLBACK_MODEL = "gemini-3.5-flash"
 JOB_TEMPLATES = {
     "ee5cdd1455a1": ("ENVIID weekly brief", "0 9 * * 1", "Rangkum perkembangan mingguan biochar, carbon removal, peluang dan langkah praktis yang relevan untuk ENVIID tongkol jagung Lampung. Gunakan sumber resmi dan tanggal akses. Jangan mengarang revenue, pelanggan, produksi, sertifikasi, pendanaan, atau hasil aplikasi ENVIID."),
     "decb1f7e8447": ("Draft LinkedIn mingguan", "17 19 * * 0", "Siapkan satu draf LinkedIn berbahasa Indonesia yang ringkas tentang pembelajaran engineering atau climate-tech. Pisahkan draf dari publikasi. Jangan mengarang pengalaman, sertifikat, metrik dampak, atau hasil kerja pribadi Ardhya. Jika fakta pribadi belum terbukti, gunakan pembahasan edukasi umum dengan sumber resmi."),
@@ -63,19 +66,25 @@ def configure_llm(config: dict, home: Path) -> None:
             if "=" in line and not line.lstrip().startswith("#"):
                 key, value = line.split("=", 1)
                 env[key.strip()] = value.strip().strip("\"'")
-    if not env.get("OPENROUTER_API_KEY"):
+    env.update({key: os.environ[key] for key in ("GOOGLE_API_KEY", "OPENROUTER_API_KEY") if os.environ.get(key)})
+    if not env.get("GOOGLE_API_KEY"):
+        if env.get("OPENROUTER_API_KEY"):
+            raise ValueError("GOOGLE_API_KEY is required for the production primary route")
         return
-    # These routes passed isolated cloud text AND image probes on 2026-11-15.
-    config["model"] = {"provider": "openrouter", "default": "particle-ai/particle-1:free",
+    # Explicit endpoint + key_env are the pinned core's bare-custom primary schema.
+    config["model"] = {"provider": "custom", "default": PRIMARY_MODEL,
+                       "base_url": GOOGLE_BASE_URL, "key_env": "GOOGLE_API_KEY",
+                       "api_mode": "chat_completions",
                        "context_length": 131072, "max_tokens": 4096}
-    fallbacks = []
-    if env.get("GOOGLE_API_KEY"):
-        fallbacks.append({"provider": "custom", "model": "gemini-3.5-flash-lite",
-                          "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
-                          "api_key_env": "GOOGLE_API_KEY", "supports_vision": True})
-    fallbacks.extend({"provider": "openrouter", "model": model, "supports_vision": True}
-                     for model in ("nvidia/nemotron-3.5-super-vl:free", "inclusionai/ling-3.2-flash:free"))
+    fallbacks = [{"provider": "custom", "model": FALLBACK_MODEL,
+                  "base_url": GOOGLE_BASE_URL, "key_env": "GOOGLE_API_KEY",
+                  "api_mode": "chat_completions", "supports_vision": True}]
+    if env.get("OPENROUTER_API_KEY"):
+        fallbacks.append({"provider": "openrouter", "model": "inclusionai/ling-3.2-flash:free", "supports_vision": True})
     config["fallback_providers"] = fallbacks
+    # The native loader appends this legacy key, which could reintroduce free routes.
+    config.pop("fallback_model", None)
+    config.setdefault("fallback", {})["min_switch_reset_seconds"] = 0
     config.setdefault("platform_toolsets", {})["telegram"] = ["terminal", "file", "web", "skills", "vision", "image_gen", "no_mcp"]
     config.setdefault("agent", {}).update(api_max_retries=1, local_stream_stale_timeout=20, reasoning_effort="low")
     for provider in ("openrouter", "custom", "gemini", "groq", "9router"):
@@ -83,7 +92,7 @@ def configure_llm(config: dict, home: Path) -> None:
     config.setdefault("web", {})["extract_char_limit"] = 6000
     config.setdefault("vision", {}).update(embed_target_bytes=131072, max_calls_per_image=2)
     config.setdefault("compression", {}).update(threshold=0.4, threshold_tokens=24000, protect_last_n=4)
-    config.setdefault("auxiliary", {})["compression"] = {"provider": "openrouter", "model": "particle-ai/particle-1:free", "timeout": 20}
+    config.setdefault("auxiliary", {})["compression"] = {"provider": "custom", "model": PRIMARY_MODEL, "timeout": 20}
 
 
 def configure(home: Path) -> dict:
@@ -113,8 +122,8 @@ def configure(home: Path) -> dict:
     changed = []
     for job in data.get("jobs", []):
         if job.get("id") in RESEARCH_JOBS:
-            job["provider"] = "openrouter"
-            job["model"] = "particle-ai/particle-1:free"
+            job["provider"] = config.get("model", {}).get("provider", "custom")
+            job["model"] = config.get("model", {}).get("default", PRIMARY_MODEL)
             job["enabled_toolsets"] = ["web", "file", "no_mcp"] if job.get("id") == "6f17c39ca284" else ["web", "no_mcp"]
             changed.append(job["id"])
         if job.get("id") == "c3277fb270f1":
