@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: |
           if ! python3 -c 'import yaml' >/dev/null 2>&1; then
             sudo timeout --kill-after=10s 90s apt-get update
@@ -39,11 +39,12 @@ jobs:
           HERMES_BUNDLE_KEY: hermes-synthetic-smoke
         run: python3 ops/state_recovery_drill.py create --folder "$RUNNER_TEMP/hermes-state-smoke"
       - name: Publish synthetic fixture for the isolated artifact API drill
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: hermes-recovery-bundle-1-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/hermes-state-smoke/publish/hermes-bundle.enc
             ${{ runner.temp }}/hermes-state-smoke/publish/hermes-bundle.meta.json
+          archive: true
           retention-days: 1
           if-no-files-found: error

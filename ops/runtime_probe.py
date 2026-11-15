@@ -27,6 +27,8 @@ def probe(home: Path, timeout: float = 2.0, expected_pid: int | None = None,
 
     A fresh on-disk heartbeat alone is insufficient because its write is off-loop.
     The one-byte socket reply is dispatched by the actual gateway asyncio loop.
+    Cron markers track dispatch ticks, not job completion. The pinned built-in
+    scheduler uses sync=False even with one worker, so long jobs do not age them.
     """
     result = {"ok": False, "pid": None, "loop_responsive": False}
     deadline = time.monotonic() + timeout

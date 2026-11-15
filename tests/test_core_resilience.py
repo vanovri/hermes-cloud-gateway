@@ -178,6 +178,17 @@ class RuntimeProbeTests(unittest.TestCase):
             result = probe(home, require_cron=True)
         self.assertTrue(result["ok"], result)
 
+    def test_inflight_job_cannot_mask_a_hung_dispatch_ticker(self):
+        with self.runtime() as home:
+            (home / "cron").mkdir()
+            (home / "cron/ticker_heartbeat").write_text(f"{time.time() - 301} 123")
+            (home / "cron/ticker_last_success").write_text(str(time.time() - 721))
+            (home / "cron/jobs.json").write_text(json.dumps({"jobs": [
+                {"id": "long-running-research", "state": "running", "enabled": True}]}))
+            result = probe(home, require_cron=True)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "cron_heartbeat_stale")
+
     def test_fresh_file_cannot_mask_frozen_loop(self):
         with self.runtime(blocked=True) as home:
             start = time.monotonic()

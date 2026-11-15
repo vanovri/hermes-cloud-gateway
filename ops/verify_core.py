@@ -28,10 +28,12 @@ def verify(core: Path) -> dict:
         py_compile.compile(str(core / relative), doraise=True)
     subprocess.run([sys.executable, str(source.parent / "tests/native_watchdog_drill.py"), str(core)],
                    check=True, timeout=30)
+    subprocess.run([sys.executable, str(source.parent / "tests/native_cron_progress_drill.py"), str(core)],
+                   check=True, timeout=30)
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "tests",
                     "-p", "test_core_resilience.py", "-v"],
                    cwd=source.parent, check=True, timeout=30)
-    return {"patch_idempotence": True, "compiled_modules": len(first), "watchdog_drills": 4,
+    return {"patch_idempotence": True, "compiled_modules": len(first), "watchdog_drills": 4, "cron_progress_drills": 2,
             "core_revision": PINNED_CORE_REVISION if (core / ".git").exists() else "archive_context_checked"}
 
 
