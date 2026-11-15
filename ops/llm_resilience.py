@@ -59,3 +59,8 @@ def bounded_outbound(agent, messages):
 
 def fresh_payload_rejection(messages):
     return sum(message.get("role") == "user" for message in messages) <= 3
+
+
+def unhealthy_legacy_override(entry):
+    return entry.get("provider") in {"custom", "9router", "groq"} and entry.get("model") in {
+        "grok-auto", "ag/gemini-3.8-flash", "ag/gemini-3-flash", "openai/gpt-oss-120b"}

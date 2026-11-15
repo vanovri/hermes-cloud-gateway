@@ -6,11 +6,14 @@ from types import SimpleNamespace
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ops"))
-from llm_resilience import bounded_outbound, compact_skill_index, fresh_payload_rejection, skip_fallback, RequestBudgetExceeded
+from llm_resilience import bounded_outbound, compact_skill_index, fresh_payload_rejection, skip_fallback, RequestBudgetExceeded, unhealthy_legacy_override
 from runtime_config import configure_llm
 
 
 class LLMResilienceTests(unittest.TestCase):
+    def test_legacy_override_cannot_reintroduce_failed_cloud_route(self):
+        self.assertTrue(unhealthy_legacy_override({"provider": "custom", "model": "grok-auto"}))
+        self.assertFalse(unhealthy_legacy_override({"provider": "openrouter", "model": "particle-ai/particle-1:free"}))
     def test_large_catalog_is_lazy_and_bounded_without_removing_skills(self):
         catalog = {"engineering": [(f"skill-{index}", "specialized instructions " * 30) for index in range(1134)]}
         result = compact_skill_index(catalog, {"skills_list", "skill_view"})

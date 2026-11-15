@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 def measure():
-    import yaml
+    import hermes_yaml as yaml
     from run_agent import AIAgent
     from agent.system_prompt import build_system_prompt_parts, _skills_prompt
     home = Path(os.environ["HERMES_HOME"])

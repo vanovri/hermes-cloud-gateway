@@ -193,7 +193,14 @@ def apply_llm_resilience(core: Path, source: Path) -> list[Path]:
                  '        import httpx\n'
                  '        client_kwargs.update(timeout=httpx.Timeout(20.0, connect=5.0), max_retries=0)\n'
                  '    agent._client_kwargs = client_kwargs  # stored for rebuilding after interrupt\n')
-    return [helper, prompt, request, fallback, recovery, overflow, gateway, init]
+    cache = core / "gateway/run_agent_cache.py"
+    replace_once(cache, '        if not persisted:\n            return\n',
+                 '        if not persisted:\n            return\n'
+                 '        from agent.cloud_llm_resilience import unhealthy_legacy_override\n'
+                 '        if unhealthy_legacy_override(persisted):\n'
+                 '            logger.warning("Ignoring unavailable legacy model override; using configured route")\n'
+                 '            return\n')
+    return [helper, prompt, request, fallback, recovery, overflow, gateway, init, cache]
 
 
 if __name__ == "__main__":
