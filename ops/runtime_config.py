@@ -8,6 +8,7 @@ from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
 import yaml
+from io_utils import atomic_text
 
 RESEARCH_JOBS = {"ee5cdd1455a1", "decb1f7e8447", "357fd2ff763c", "6f17c39ca284", "2a8e765b6611"}
 STARTUP_JOB = "2a8e765b6611"
@@ -51,14 +52,7 @@ def ensure_migrated_jobs(jobs: list, now: datetime) -> list[str]:
 
 
 def atomic_write(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + ".ops-tmp")
-    with temporary.open("w", encoding="utf-8") as handle:
-        handle.write(text)
-        handle.flush()
-        os.fsync(handle.fileno())
-    temporary.chmod(0o600)
-    os.replace(temporary, path)
+    atomic_text(path, text)
 
 
 def configure(home: Path) -> dict:

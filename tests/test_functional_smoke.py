@@ -20,7 +20,7 @@ class FunctionalSmokeTests(unittest.TestCase):
                 db.execute('CREATE TABLE messages (text TEXT)')
                 db.execute("INSERT INTO messages VALUES ('preserved')")
             with patch('functional_smoke.readiness', return_value={'ready': True}), \
-                 patch('functional_smoke.subprocess.run') as model, \
+                 patch('functional_smoke.run_process') as model, \
                  patch('functional_smoke.urllib.request.urlopen') as telegram:
                 model.return_value.stdout = 'HERMES_RECOVERY_OK'
                 telegram.return_value.__enter__.return_value = io.BytesIO(json.dumps(

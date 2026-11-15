@@ -1,13 +1,18 @@
 """Fetch official source text independently; render quotes instead of model-authored claims."""
 from __future__ import annotations
 
+from contextlib import contextmanager
 import hashlib
 import html
 import ipaddress
 import json
 import re
+import random
 import socket
 import sqlite3
+import subprocess
+import sys
+import time
 import urllib.error
 import urllib.request
 from datetime import date, datetime, timedelta, timezone
@@ -65,6 +70,17 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def fetch_page(url: str, hosts: dict) -> str:
+    # Kill the isolated fetch on DNS hangs, slow headers or drip-fed bodies.
+    try:
+        result = subprocess.run([sys.executable, str(Path(__file__).resolve())],
+                                input=json.dumps({"url": url, "hosts": hosts}),
+                                text=True, capture_output=True, check=True, timeout=20)
+        return result.stdout
+    except (subprocess.TimeoutExpired, subprocess.CalledProcessError):
+        raise ValueError("Official source fetch failed or exceeded its deadline") from None
+
+
+def _fetch_page(url: str, hosts: dict) -> str:
     opener = urllib.request.build_opener(NoRedirect)
     for _ in range(4):
         checked_url(url, hosts)
@@ -72,14 +88,27 @@ def fetch_page(url: str, hosts: dict) -> str:
         for address in socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM):
             if not ipaddress.ip_address(address[4][0]).is_global:
                 raise ValueError("Source resolves to a non-public address")
-        try:
-            response = opener.open(urllib.request.Request(url, headers={"User-Agent": "HermesEvidenceCheck/1.0"}), timeout=8)
-        except urllib.error.HTTPError as exc:
-            if exc.code in {301, 302, 303, 307, 308}:
-                from urllib.parse import urljoin
-                url = checked_url(urljoin(url, exc.headers.get("Location", "")), hosts)
-                continue
-            raise ValueError("Official source is unavailable") from None
+        response = None
+        for attempt in range(3):
+            try:
+                response = opener.open(urllib.request.Request(url, headers={"User-Agent": "HermesEvidenceCheck/1.0"}), timeout=8)
+                break
+            except urllib.error.HTTPError as exc:
+                try:
+                    if exc.code in {301, 302, 303, 307, 308}:
+                        from urllib.parse import urljoin
+                        url = checked_url(urljoin(url, exc.headers.get("Location", "")), hosts)
+                        break
+                    if exc.code not in {429, 500, 502, 503, 504} or attempt == 2:
+                        raise ValueError("Official source is unavailable") from None
+                finally:
+                    exc.close()
+            except OSError:
+                if attempt == 2:
+                    raise ValueError("Official source is unavailable") from None
+            time.sleep(random.uniform(0, min(3, 2 ** attempt)))
+        if response is None:
+            continue
         with response:
             if "text/html" not in response.headers.get("Content-Type", ""):
                 raise ValueError("Source must be an HTML page")
@@ -115,15 +144,21 @@ def dates_in_quote(quote: str) -> set[date]:
     return dates
 
 
+@contextmanager
 def database(home: Path):
     path = home / "state/startup_digest.sqlite"
     path.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(path, timeout=10)
-    path.chmod(0o600)
-    connection.execute("CREATE TABLE IF NOT EXISTS prepared (digest TEXT PRIMARY KEY, payload TEXT NOT NULL, prepared_at TEXT NOT NULL)")
-    connection.execute("CREATE TABLE IF NOT EXISTS delivered (item_key TEXT PRIMARY KEY, title TEXT NOT NULL, url TEXT NOT NULL, delivered_at TEXT NOT NULL)")
-    connection.commit()
-    return connection
+    deadline = time.monotonic() + 15
+    connection.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
+    try:
+        path.chmod(0o600)
+        with connection:
+            connection.execute("CREATE TABLE IF NOT EXISTS prepared (digest TEXT PRIMARY KEY, payload TEXT NOT NULL, prepared_at TEXT NOT NULL)")
+            connection.execute("CREATE TABLE IF NOT EXISTS delivered (item_key TEXT PRIMARY KEY, title TEXT NOT NULL, url TEXT NOT NULL, delivered_at TEXT NOT NULL)")
+            yield connection
+    finally:
+        connection.close()
 
 
 def validate_items(items, hosts, *, fetcher=fetch_page, today=None, seen=frozenset()):
@@ -215,10 +250,12 @@ def prepare(home: Path, raw: str) -> str:
         db.execute("DELETE FROM delivered WHERE delivered_at < ?", (cutoff,))
         db.execute("DELETE FROM prepared WHERE prepared_at < ?", (cutoff,))
         seen = {row[0] for row in db.execute("SELECT item_key FROM delivered")}
-        items, rejected = validate_items(obj.get("opportunities"), hosts, today=now.date(), seen=seen)
-        output = render(items, now.date())
-        digest = hashlib.sha256(output.encode()).hexdigest()
+    items, rejected = validate_items(obj.get("opportunities"), hosts, today=now.date(), seen=seen)
+    output = render(items, now.date())
+    digest = hashlib.sha256(output.encode()).hexdigest()
+    with database(home) as db:
         db.execute("INSERT OR REPLACE INTO prepared VALUES (?, ?, ?)", (digest, json.dumps(items), now.isoformat()))
+        db.execute("DELETE FROM prepared WHERE rowid NOT IN (SELECT rowid FROM prepared ORDER BY prepared_at DESC LIMIT 200)")
     return output
 
 
@@ -240,3 +277,8 @@ def compact_context(home: Path) -> str:
     with database(home) as db:
         rows = list(db.execute("SELECT title, url FROM delivered ORDER BY delivered_at DESC LIMIT 60"))
     return json.dumps({"reviewed_official_hosts": hosts, "already_delivered": rows}, ensure_ascii=False)
+
+
+if __name__ == "__main__":
+    request = json.load(sys.stdin)
+    print(_fetch_page(request["url"], request["hosts"]))

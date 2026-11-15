@@ -1,33 +1,38 @@
-# Hermes Cloud Gateway
+Hermes Cloud Gateway
 
-Scheduled GitHub Actions runtime wrapper for running a stateful **Hermes Agent** (`NousResearch/hermes-agent` `v0.23.0`, commit-pinned & SHA-256 verified) alongside a loopback **9router** token balancer (`127.0.0.1:20128`) in bounded `5h 20m` (`19,200 s`) cloud cycles.
+Runs Hermes commit 2bd378ed1b8d6bf2192cb26e0a55ff3091e6bd19 and 9router 0.5.112.
+The separate laptop relay profile remains independent.
 
-## Architecture & State Lifecycle
+Actions restores encrypted state, applies checked core patches, then runs
+ops/supervise.py for at most 17,400 seconds. The supervisor owns the foreground
+router and gateway process trees. It checks actual event-loop, cron, housekeeping,
+Telegram-adapter and router progress. Probe subprocesses have ten-second deadlines.
+Five consecutive unhealthy probes after startup cause exit 1 and bounded cleanup.
 
-```mermaid
-flowchart LR
-    Cron["GitHub Actions Schedule / Dispatch"] --> Boot["Pinned Checkout + SHA-256 Verified Hermes Installer"]
-    Boot --> Decrypt["Decrypt hermes-bundle.enc (AES-256-CBC PBKDF2 via HERMES_BUNDLE_KEY)"]
-    Decrypt --> Overlay["Apply overlay/ Scripts + Truncate SQLite WAL & Stale Leases"]
-    Overlay --> Router["Loopback 9router Balancer (127.0.0.1:20128)"]
-    Router --> Gateway["hermes gateway run (19,200s SIGTERM budget + 30s health log)"]
-    Gateway -->|"if: success() + .hermes_restored_ok"| Persist["Re-encrypt State -> Commit [skip ci] -> Re-dispatch"]
-```
+Gateway shutdown keeps the router available during drain. Detached descendants
+are killed and reaped. Captured output and diagnostic dumps rotate at 20 MiB
+with five backups. The application logging queue holds at most 2,048 records.
 
-## Operational & Security Controls
+After successful restore, persistence runs even when the gateway fails. It uses
+SQLite online backups, content hashes, encrypted recovery artifacts, and atomic
+rotation of state/live plus two backup refs. A separate workflow recovers failed
+cycles and checks every five minutes. Failed snapshots cannot replace valid state.
 
-| Control | Implementation in `.github/workflows/hermes.yml` |
-|---|---|
-| **Supply-Chain Pinning** | `actions/checkout` pinned to commit SHA (`34e1148...`) and `hermes-agent` `install.sh` pinned to commit `2bd378e...` with mandatory `sha256sum -c` check before execution. |
-| **Encrypted Persistence** | Runtime state (`.hermes/`, `.9router/`, `.cua/`) is stored at rest in `hermes-bundle.enc` using `openssl enc -aes-256-cbc -pbkdf2 -salt` keyed by the GitHub Actions secret `HERMES_BUNDLE_KEY`. Temporary archives in `/tmp` are deleted immediately after unpack/pack. |
-| **Corruption Guard** | Persistence runs only under `if: success()` and verifies `/tmp/.hermes_restored_ok` plus non-empty `.hermes/.env` so a failed boot never overwrites `hermes-bundle.enc`. |
-| **SQLite Hygiene** | Clears stale `compression_locks` and `session_turn_leases` and runs `PRAGMA wal_checkpoint(TRUNCATE)` before and after each gateway cycle. |
-| **Loopback Router** | `9router` binds exclusively to `127.0.0.1:20128` inside the runner VM and is readiness-probed prior to starting `hermes gateway run`. |
+Actions schedules can be delayed or dropped. Runner handoffs have a service gap.
+Hard runner loss can lose changes since the previous completed state publication.
+This design does not establish uninterrupted availability or zero data loss.
 
-## Required Repository Secrets
+The persistent-host alternative is deploy/hermes.service. It provides restart
+supervision, a systemd watchdog, memory limits and reboot startup via linger.
+See deploy/OPERATIONS.txt for exact deployment, reload and monitoring commands.
+Never run cloud and server Telegram consumers simultaneously.
 
-- `HERMES_BUNDLE_KEY` — symmetric passphrase used by OpenSSL PBKDF2 (`AES-256-CBC`) to decrypt and re-encrypt `hermes-bundle.enc`.
+Linux tests:
+python3 -m unittest discover -s tests -v
 
-## Scope Notice
+Pinned-source compatibility and native watchdog drills:
+python3 ops/verify_core.py --core /path/to/pinned/hermes-agent
 
-Personal infrastructure automation repository for Tri-Agent (`Antigravity` / `Codex` / `Hermes`) workflows. Encrypted state bundles (`hermes-bundle.enc`) are opaque without `HERMES_BUNDLE_KEY` and are intended solely for single-owner scheduled execution.
+HERMES_BUNDLE_KEY is the existing repository secret for state encryption.
+Never commit credentials, plaintext state, or the key. Deployment does not
+change personal memories or the pinned runtime revision.

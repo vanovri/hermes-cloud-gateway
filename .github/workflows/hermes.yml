@@ -22,7 +22,7 @@ concurrency:
 jobs:
   gateway:
     runs-on: ubuntu-latest
-    timeout-minutes: 350
+    timeout-minutes: 360
     defaults:
       run:
         shell: bash
@@ -35,34 +35,14 @@ jobs:
           ref: main
 
       - name: Install pinned Hermes and dependencies
+        timeout-minutes: 30
         run: |
-          missing_packages=()
-          for command in jq openssl sqlite3 curl; do
-            if ! command -v "$command" >/dev/null 2>&1; then missing_packages+=("$command"); fi
-          done
-          if ! python3 -c 'import yaml' >/dev/null 2>&1; then missing_packages+=(python3-yaml); fi
-          if (( ${#missing_packages[@]} )); then
-            sudo timeout --kill-after=10s 90s apt-get update
-            sudo timeout --kill-after=10s 90s apt-get install -y "${missing_packages[@]}"
-          fi
-          hermes_ref=2bd378ed1b8d6bf2192cb26e0a55ff3091e6bd19
-          installer="$(mktemp)"
-          curl -fsSL --retry 3 --proto '=https' "https://raw.githubusercontent.com/NousResearch/hermes-agent/${hermes_ref}/scripts/install.sh" -o "$installer"
-          echo "abf338605dae6dd28d101673ac6aed7995c955745db46d47676bc591a7957209  $installer" | sha256sum -c -
-          bash "$installer" --commit "$hermes_ref" --non-interactive
-          rm -f "$installer"
-          export PATH="$HOME/.local/bin:$HOME/.hermes/node/bin:$PATH"
-          npm install -g 9router@0.5.112
-          if ! npm install -g @llmtrim/cli@0.13.4; then
-            echo "::warning::Optional llmtrim install failed; gateway operation can continue"
-          fi
-          if ! uv tool install https://github.com/Panniantong/Agent-Reach/archive/47898829204ad27521d8a1719e3aeca3b8a3e0ca.zip; then
-            echo "::warning::Optional Agent Reach install failed; built-in web tools remain available"
-          fi
+          bash deploy/prepare-runtime.sh
           python3 -m unittest discover -s tests -v
 
       - name: Restore encrypted state and apply verified operational fixes
         id: restore
+        timeout-minutes: 10
         env:
           HERMES_BUNDLE_KEY: ${{ secrets.HERMES_BUNDLE_KEY }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -90,74 +70,20 @@ jobs:
           rm -f /tmp/hermes-restore-proof.tar.gz
           touch /tmp/hermes-restored-ok
 
-      - name: Run gateway with bounded graceful shutdown
+      - name: Run gateway with active progress supervision
         id: gateway
+        timeout-minutes: 295
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERIFY_DELIVERY: ${{ inputs.verify_delivery || false }}
         run: |
-          export PATH="$HOME/.local/bin:$HOME/.hermes/bin:$HOME/.hermes/hermes-agent/.hermes/bin:$HOME/.hermes/node/bin:$(npm prefix -g)/bin:$PATH"
-          9router --tray --skip-update -n -H 127.0.0.1 -p 20128 >/tmp/9router.log 2>&1 &
-          router_pid=$!
-          router_ready() {
-            local status
-            status="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 2 http://127.0.0.1:20128/v1/models 2>/dev/null)" || return 1
-            [[ "$status" == 200 || "$status" == 401 ]]
-          }
-          for i in $(seq 1 30); do
-            if router_ready; then break; fi
-            sleep 1
-          done
-          if ! router_ready; then
-            echo "::error::9router transport is unavailable"
-            exit 1
-          fi
-          timeout --signal=SIGTERM --kill-after=180s 19200s hermes gateway run &
-          gateway_pid=$!
-          deployed_sha="$(git rev-parse HEAD)"
-          (
-            unhealthy_ticks=0
-            while kill -0 "$gateway_pid" 2>/dev/null; do
-              router_http=unreachable
-              if router_ready; then router_http=ready; fi
-              printf 'HERMES_HEARTBEAT %s gateway_process=running router_transport=%s inference=untested\n' "$(date -u +%FT%TZ)" "$router_http"
-              if ! python3 ops/health_report.py --home "$HOME/.hermes"; then
-                echo "::warning::Detailed health probe failed; process liveness is not full readiness"
-              fi
-              if ! python3 ops/publish_readiness.py --home "$HOME/.hermes" --sha "$deployed_sha"; then
-                echo "::warning::Could not publish runtime readiness receipt"
-              fi
-              if router_ready && python3 -c 'import sys; from pathlib import Path; sys.path.insert(0, "ops"); from live_control import readiness; sys.exit(0 if readiness(Path.home() / ".hermes")["ready"] else 1)'; then
-                unhealthy_ticks=0
-              else
-                unhealthy_ticks=$((unhealthy_ticks + 1))
-              fi
-              if (( unhealthy_ticks >= 5 )); then
-                echo "::warning::Gateway unhealthy for five probes; saving state before recovery"
-                kill -TERM "$gateway_pid" 2>/dev/null || true
-                break
-              fi
-              sleep 60
-            done
-          ) &
-          heartbeat_pid=$!
-          if [[ "$VERIFY_DELIVERY" == true ]]; then
-            python3 ops/functional_smoke.py > /tmp/hermes-functional-smoke.log 2>&1 &
-          fi
-          gateway_status=0
-          wait "$gateway_pid" || gateway_status=$?
-          kill "$heartbeat_pid" 2>/dev/null || true
-          wait "$heartbeat_pid" 2>/dev/null || true
-          kill "$router_pid" 2>/dev/null || true
-          echo "exit_code=$gateway_status" >> "$GITHUB_OUTPUT"
-          printf 'HERMES_CYCLE_END %s exit=%s\n' "$(date -u +%FT%TZ)" "$gateway_status"
-          if [[ "$gateway_status" != 0 && "$gateway_status" != 124 ]]; then
-            echo "::error::Gateway exited unexpectedly; persistent state will still be saved"
-            exit 1
-          fi
+          export PATH="$HOME/.local/bin:$HOME/.hermes/bin:$HOME/.hermes/node/bin:$PATH"
+          export GITHUB_SHA="$(git rev-parse HEAD)"
+          python3 ops/supervise.py --max-runtime 17400
 
       - name: Snapshot and seal next encrypted state generation
         id: persist
+        timeout-minutes: 10
         if: ${{ always() && steps.restore.outcome == 'success' }}
         env:
           HERMES_BUNDLE_KEY: ${{ secrets.HERMES_BUNDLE_KEY }}
@@ -168,6 +94,7 @@ jobs:
 
       - name: Retain encrypted recovery before publishing state refs
         id: recovery
+        timeout-minutes: 3
         if: ${{ always() && steps.persist.outcome == 'success' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -180,6 +107,7 @@ jobs:
 
       - name: Publish parentless state commit and rotate backup refs atomically
         id: publish
+        timeout-minutes: 5
         if: ${{ always() && steps.recovery.outcome == 'success' }}
         run: python3 ops/state_store.py publish --work "$RUNNER_TEMP/hermes-state"
 
@@ -188,11 +116,11 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if ! gh api --method DELETE "repos/${GITHUB_REPOSITORY}/actions/artifacts/${{ steps.recovery.outputs.artifact-id }}"; then
+          if ! timeout --kill-after=5s 45s gh api --method DELETE "repos/${GITHUB_REPOSITORY}/actions/artifacts/${{ steps.recovery.outputs.artifact-id }}"; then
             echo '::warning::Published recovery artifact retained until its five-day expiry'
           fi
       - name: Queue next cycle after successful persistence
         if: ${{ always() && steps.publish.outcome == 'success' && steps.gateway.outcome == 'success' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh workflow run hermes.yml
+        run: timeout --kill-after=5s 45s gh workflow run hermes.yml

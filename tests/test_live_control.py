@@ -15,6 +15,21 @@ from publish_readiness import publish
 
 
 class LiveControlTests(unittest.TestCase):
+    def setUp(self):
+        probe = patch("publish_readiness.probe", return_value={"ok": True, "loop_responsive": True})
+        probe.start()
+        self.addCleanup(probe.stop)
+
+    def test_stalled_housekeeping_never_publishes_green_receipt(self):
+        with tempfile.TemporaryDirectory() as td, patch.dict(os.environ, {"GITHUB_RUN_ID": "1", "GITHUB_REPOSITORY": "synthetic/repo"}):
+            with patch("publish_readiness.readiness", return_value={"ready": True}), patch("publish_readiness.subprocess.run") as api:
+                api.return_value.stdout = '{"id": 1}'
+                publish(Path(td), "a" * 40)
+                with patch("publish_readiness.probe", return_value={"ok": False, "reason": "housekeeping_stale"}):
+                    result = publish(Path(td), "a" * 40)
+                self.assertFalse(result["ready"])
+                self.assertEqual(json.loads(api.call_args.kwargs["input"])["conclusion"], "failure")
+
     def test_private_socket_uses_live_response(self):
         with tempfile.TemporaryDirectory() as td:
             home = Path(td)

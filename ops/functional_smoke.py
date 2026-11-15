@@ -2,12 +2,13 @@
 import json
 import os
 from pathlib import Path
-import sqlite3
+import sys
 import subprocess
 import time
 import urllib.request
 
 from live_control import readiness
+from io_utils import readonly_database, response_json, run_process
 
 MARKER = 'HERMES_RECOVERY_OK'
 
@@ -20,17 +21,17 @@ def probe(home):
     else:
         raise RuntimeError('Live gateway did not become ready')
     counts = {}
-    with sqlite3.connect(f'file:{home / "state.db"}?mode=ro', uri=True) as db:
+    with readonly_database(home / "state.db") as db:
         if db.execute('PRAGMA quick_check').fetchone()[0] != 'ok':
             raise RuntimeError('Restored SQLite integrity check failed')
         tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         for table in ('sessions', 'messages', 'delivery_obligations'):
             if table in tables:
                 counts[table] = db.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0]
-    result = subprocess.run(['hermes', 'chat', '-q',
+    result = run_process(['hermes', 'chat', '-q',
         f'Recovery connectivity test. Reply with exactly {MARKER}. Do not use tools or change any files.',
         '--quiet', '--max-turns', '1', '--run-budget', '90', '--toolsets', 'no_mcp'],
-        capture_output=True, text=True, timeout=150, check=True)
+        text=True, timeout=150, check=True)
     if MARKER not in result.stdout:
         raise RuntimeError('Model did not return the recovery marker')
     env = {}
@@ -47,7 +48,7 @@ def probe(home):
     request = urllib.request.Request('https://api.telegram.org/bot' + token + '/sendMessage',
                                      data=payload, headers={'Content-Type': 'application/json'})
     with urllib.request.urlopen(request, timeout=20) as response:
-        receipt = json.load(response)
+        receipt = response_json(response, timeout=20)
     if receipt.get('ok') is not True or not receipt.get('result', {}).get('message_id'):
         raise RuntimeError('Telegram did not acknowledge the test message')
     return {'ready': True, 'sqlite_integrity': 'ok', 'restored_counts': counts,
@@ -70,3 +71,4 @@ if __name__ == '__main__':
     subprocess.run(['gh', 'api', '--method', 'POST',
                     'repos/' + os.environ['GITHUB_REPOSITORY'] + '/check-runs', '--input', '-'],
                    input=json.dumps(payload), text=True, capture_output=True, check=True, timeout=45)
+    sys.exit(0 if conclusion == 'success' else 1)

@@ -7,12 +7,14 @@ on:
       - 'overlay/.hermes/ops/**'
       - 'overlay/.hermes/scripts/**'
       - '.github/workflows/**'
+      - 'deploy/**'
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
   verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - run: |
@@ -22,6 +24,16 @@ jobs:
           fi
           python3 -m unittest discover -s tests -v
           python3 -m compileall -q ops overlay/.hermes/ops overlay/.hermes/scripts
+          bash -n deploy/prepare-runtime.sh deploy/install-systemd.sh
+          systemd-analyze --user verify deploy/hermes.service
+      - name: Verify patches against the exact production core
+        run: |
+          core_archive="$RUNNER_TEMP/hermes-core.tar.gz"
+          curl -fsSL --connect-timeout 10 --max-time 90 --retry 3 --retry-max-time 120 \
+            https://codeload.github.com/NousResearch/hermes-agent/tar.gz/2bd378ed1b8d6bf2192cb26e0a55ff3091e6bd19 -o "$core_archive"
+          mkdir -p "$RUNNER_TEMP/hermes-core"
+          tar -xzf "$core_archive" -C "$RUNNER_TEMP/hermes-core" --strip-components=1
+          python3 ops/verify_core.py --core "$RUNNER_TEMP/hermes-core"
       - name: Seal synthetic recovery fixture
         env:
           HERMES_BUNDLE_KEY: hermes-synthetic-smoke

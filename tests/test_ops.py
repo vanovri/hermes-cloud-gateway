@@ -18,6 +18,44 @@ import startup_evidence
 
 
 class OpsTests(unittest.TestCase):
+    def test_source_retries_rate_limit_but_closes_permanent_errors(self):
+        from unittest.mock import patch
+        from email.message import Message
+        import io
+        import urllib.error
+        headers = Message()
+        headers["Content-Type"] = "text/html; charset=utf-8"
+        response = io.BytesIO(b"<p>Synthetic program</p>")
+        response.headers = headers
+        rate_body = io.BytesIO(b"limited")
+        rate = urllib.error.HTTPError("https://example.org/", 429, "limited", headers, rate_body)
+        with patch("startup_evidence.urllib.request.build_opener") as opener, patch("startup_evidence.socket.getaddrinfo", return_value=[(None, None, None, None, ("93.184.216.34", 443))]), patch("startup_evidence.time.sleep"):
+            opener.return_value.open.side_effect = [rate, response]
+            self.assertIn("Synthetic program", startup_evidence._fetch_page("https://example.org/", {"example.org": "Synthetic"}))
+            self.assertEqual(opener.return_value.open.call_count, 2)
+            self.assertTrue(rate_body.closed)
+            denied_body = io.BytesIO(b"denied")
+            denied = urllib.error.HTTPError("https://example.org/", 401, "denied", headers, denied_body)
+            opener.return_value.open.reset_mock()
+            opener.return_value.open.side_effect = denied
+            with self.assertRaises(ValueError):
+                startup_evidence._fetch_page("https://example.org/", {"example.org": "Synthetic"})
+            self.assertEqual(opener.return_value.open.call_count, 1)
+            self.assertTrue(denied_body.closed)
+
+    def test_digest_database_closes_and_fetch_has_process_deadline(self):
+        from unittest.mock import patch
+        import subprocess
+        with tempfile.TemporaryDirectory() as td:
+            with database(Path(td)) as db:
+                db.execute("SELECT 1")
+            with self.assertRaises(sqlite3.ProgrammingError):
+                db.execute("SELECT 1")
+        with patch("startup_evidence.subprocess.run", side_effect=subprocess.TimeoutExpired("synthetic", 20)) as request:
+            with self.assertRaisesRegex(ValueError, "deadline"):
+                startup_evidence.fetch_page("https://example.org/", {"example.org": "Synthetic"})
+            self.assertEqual(request.call_args.kwargs["timeout"], 20)
+
     def test_cloud_without_a_cron_store_migrates_existing_active_jobs(self):
         with tempfile.TemporaryDirectory() as td:
             home = Path(td)
@@ -123,6 +161,9 @@ class OpsTests(unittest.TestCase):
             page = "Synthetic Climate Call. Technical support is available."
             original = startup_evidence.validate_items
             def local_validate(items, hosts, **kwargs):
+                # Network validation must not retain a SQLite writer lock.
+                with database(home) as concurrent:
+                    concurrent.execute("INSERT OR REPLACE INTO prepared VALUES ('lock-probe', '[]', '2000-01-01')")
                 return original(items, hosts, fetcher=lambda *a: page, **kwargs)
             with patch.object(startup_evidence, "validate_items", side_effect=local_validate):
                 text = prepare(home, json.dumps({"opportunities": [candidate]}))

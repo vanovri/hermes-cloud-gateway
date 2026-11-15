@@ -1,0 +1,158 @@
+Hermes production operations. Prepared 15 November 2026, Asia/Jakarta.
+
+Status
+
+These changes are local and tested. They are not pushed or installed in the live
+cloud gateway or laptop relay. Keep the existing encrypted state and credentials.
+
+Deploy to Actions. Run in Windows PowerShell.
+
+Set-Location 'C:\Users\ardhy\Documents\Codex\2026-11-11\bre-mi\work\hermes-cloud-fix'
+git diff --check
+wsl -d Ubuntu-26.04 -- bash -lc 'cd /mnt/c/Users/ardhy/Documents/Codex/2026-11-11/bre-mi/work/hermes-cloud-fix && python3 -m unittest discover -s tests -v'
+git add -- README.md .github/workflows/hermes.yml .github/workflows/verify.yml ops tests deploy overlay/.hermes/ops/startup_evidence.py
+git commit -m 'fix: harden Hermes supervision and state recovery'
+git push origin main
+gh run list --repo vanovri/hermes-cloud-gateway --workflow verify.yml --limit 3
+
+Wait until the new verification run appears. Check its revision matches the push.
+Then watch it and queue the gateway only if verification succeeds:
+
+$verification = gh run list --repo vanovri/hermes-cloud-gateway --workflow verify.yml --limit 1 --json databaseId | ConvertFrom-Json
+gh run watch $verification[0].databaseId --repo vanovri/hermes-cloud-gateway --exit-status
+if ($LASTEXITCODE -ne 0) { throw 'Verification failed. Gateway dispatch stopped.' }
+gh workflow run hermes.yml --repo vanovri/hermes-cloud-gateway --ref main
+
+Concurrency preserves the active gateway. The replacement waits for the current
+cycle to finish and publish state. Do not cancel the active run to accelerate this
+handoff. Later dispatches may replace queued runs. Confirm the deployed revision
+and fresh timestamp in the readiness receipt after the replacement starts.
+
+Monitor Actions
+
+gh run list --repo vanovri/hermes-cloud-gateway --workflow hermes.yml --limit 5
+gh api repos/vanovri/hermes-cloud-gateway/commits/main/check-runs --jq '.check_runs[] | select(.name == "Hermes live runtime readiness") | {conclusion,summary:.output.summary}'
+
+For completed-run logs, replace RUN_ID with the numeric ID from the list:
+gh run view RUN_ID --repo vanovri/hermes-cloud-gateway --log
+
+A green receipt is a timestamped observation, not a continuous guarantee. Health
+checks do not invoke a model or send a message. Inference and delivery require a
+separately authorized functional smoke test with actual acknowledgments.
+
+Prepare a dedicated Ubuntu or Debian server
+
+Run as the non-root service account. Install GitHub CLI and authenticate first.
+The supplied unit expects exactly ~/hermes-cloud-gateway.
+
+gh auth login
+gh repo clone vanovri/hermes-cloud-gateway "$HOME/hermes-cloud-gateway"
+cd "$HOME/hermes-cloud-gateway"
+bash deploy/prepare-runtime.sh
+python3 -m unittest discover -s tests -v
+python3 ops/verify_core.py --core "$HOME/.hermes/hermes-agent"
+
+Provision memory for the OS in addition to the service's 4 GiB limit. The unit
+uses MemoryHigh=3G, MemoryMax=4G, TasksMax=512, LimitNOFILE=65536. Node heap is
+limited to 1,536 MiB. Persistent disk must hold state and retained logs.
+
+Transfer gateway ownership before enabling systemd
+
+Perform these steps only during server migration. They disable future cloud
+dispatches and cancel queued cycles, while allowing the active cycle to save state.
+
+gh workflow disable watchdog.yml --repo vanovri/hermes-cloud-gateway
+gh workflow disable hermes.yml --repo vanovri/hermes-cloud-gateway
+for run in $(gh run list --repo vanovri/hermes-cloud-gateway --workflow hermes.yml --status queued --limit 100 --json databaseId --jq '.[].databaseId'); do
+  gh run cancel "$run" --repo vanovri/hermes-cloud-gateway
+done
+for run in $(gh run list --repo vanovri/hermes-cloud-gateway --workflow hermes.yml --status in_progress --limit 100 --json databaseId --jq '.[].databaseId'); do
+  gh run watch "$run" --repo vanovri/hermes-cloud-gateway
+done
+gh run list --repo vanovri/hermes-cloud-gateway --workflow hermes.yml --limit 5
+
+Require no active or queued cloud gateway. Confirm the last state publication
+succeeded. Its final dispatch may fail because the workflow is disabled. If
+publication failed, reconcile the retained encrypted artifact before migration.
+Stop an old default gateway unit if present on the destination host:
+
+systemctl --user disable --now hermes-gateway.service
+
+A missing unit is expected on a fresh host. The separate laptop localrelay profile
+must remain independent. Restore into the destination service account:
+
+cd "$HOME/hermes-cloud-gateway"
+export GITHUB_REPOSITORY=vanovri/hermes-cloud-gateway
+read -r -s -p 'Existing HERMES_BUNDLE_KEY: ' HERMES_BUNDLE_KEY
+printf '\n'
+export HERMES_BUNDLE_KEY
+restore_work="$(mktemp -d)"
+python3 ops/state_store.py restore --read-only --work "$restore_work" --home "$HOME"
+unset HERMES_BUNDLE_KEY
+cp -a overlay/.hermes/. "$HOME/.hermes/"
+sed -i 's/\r$//' "$HOME/.hermes/bin/"*
+chmod +x "$HOME/.hermes/bin/"*
+python3 ops/runtime_config.py --home "$HOME/.hermes"
+bash deploy/install-systemd.sh
+sudo loginctl enable-linger "$USER"
+systemctl --user enable --now hermes.service
+
+Reload and monitor the persistent service
+
+cd "$HOME/hermes-cloud-gateway"
+systemctl --user stop hermes.service
+git pull --ff-only
+python3 ops/verify_core.py --core "$HOME/.hermes/hermes-agent"
+bash deploy/install-systemd.sh
+systemctl --user restart hermes.service
+systemctl --user is-enabled hermes.service
+systemctl --user status hermes.service --no-pager
+timeout --kill-after=2s 12s python3 ops/supervise.py --check
+timeout --kill-after=2s 12s python3 ops/runtime_probe.py --home "$HOME/.hermes" --require-cron
+journalctl --user -u hermes.service -f
+tail -F "$HOME/.hermes/logs/supervisor-gateway.log" "$HOME/.hermes/logs/supervisor-router.log"
+
+systemd restarts both successful and failed exits after five seconds without a
+start-rate limit. It kills a frozen supervisor after 60 seconds without a watchdog
+notification. The supervisor allows up to 60 seconds for gateway drain while
+keeping the router available, then terminates remaining descendants. The unit's
+TimeoutStopSec=80 sets the final shutdown deadline. Readiness requires Telegram
+and the built-in scheduler, matching this deployment profile.
+
+Log retention on the dedicated host
+
+Each captured process retains approximately 120 MiB. Standard Hermes logs retain
+their existing smaller rotation limits. Request-body logging is disabled. Watchdog
+diagnostics rotate internally. This optional journal configuration affects all
+services on the dedicated host: 512 MiB persistent, 128 MiB runtime, 14-day age.
+
+sudo mkdir -p /etc/systemd/journald.conf.d
+sudo install -m 644 deploy/journald-retention.conf /etc/systemd/journald.conf.d/60-hermes-retention.conf
+sudo systemctl restart systemd-journald
+journalctl --disk-usage
+
+deploy/hermes-logrotate.conf is an optional extra policy for third-party diagnostic
+files. Replace @HOME@ with the service account's absolute home before installation.
+Internal watchdog rotation does not depend on logrotate.
+
+Recovery boundaries
+
+The systemd service stores state on its persistent disk. It does not publish
+GitHub state generations after migration. Back up that disk before relying on it
+against disk loss. Do not re-enable cloud from an older state/live generation
+after the server accepts new work. Reverse migration needs the latest server
+state through the verified encrypted recovery protocol.
+
+Actions remains best effort. Handoffs interrupt service. Schedules can be delayed
+or dropped. Abrupt runner loss can lose changes since the last published state,
+up to a 17,400-second active cycle plus startup and publication time. Credential
+revocation needs valid replacement credentials. Single-host storage failure needs
+backups or another host. Process restarts cannot remove those dependencies.
+
+No production soak, real provider outage, or physical server reboot was performed.
+Local fault drills and config validation establish only their tested behavior.
+
+Official references
+https://docs.github.com/en/actions/how-tos/troubleshoot-workflows
+https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html
+https://www.freedesktop.org/software/systemd/man/latest/systemd.unit.html

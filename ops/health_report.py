@@ -2,10 +2,11 @@
 import argparse
 import hashlib
 import json
-import sqlite3
+import sys
 import urllib.request
 from pathlib import Path
 from live_control import readiness
+from io_utils import readonly_database, response_json
 
 
 def report(home: Path) -> dict:
@@ -16,7 +17,7 @@ def report(home: Path) -> dict:
         state = json.loads(state_path.read_text())
         data["runtime"] = {k: state[k] for k in ("state", "status", "code_sha", "code_version", "started_at") if k in state}
     path = home / "state.db"
-    with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as connection:
+    with readonly_database(path) as connection:
         tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         if "delivery_obligations" in tables:
             data["delivery_obligations"] = dict(connection.execute("SELECT state, COUNT(*) FROM delivery_obligations GROUP BY state"))
@@ -30,7 +31,7 @@ def report(home: Path) -> dict:
     if token:
         try:
             with urllib.request.urlopen("https://api.telegram.org/bot" + token + "/getMe", timeout=8) as response:
-                identity = json.load(response)
+                identity = response_json(response, timeout=8)
             data["telegram_identity"] = {"ok": identity.get("ok") is True,
                 "fingerprint": hashlib.sha256(str(identity.get("result", {}).get("id", "")).encode()).hexdigest()[:12]}
         except Exception as exc:
@@ -42,4 +43,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--home", type=Path, required=True)
     args = parser.parse_args()
-    print(json.dumps(report(args.home), sort_keys=True))
+    result = report(args.home)
+    print(json.dumps(result, sort_keys=True))
+    sys.exit(0 if result["live_control"]["ready"] else 1)

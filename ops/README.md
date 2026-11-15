@@ -14,4 +14,8 @@ Run isolated operational tests with:
 
 python3 -m unittest discover -s tests -v
 
-Core regression tests live in the separate local verification checkout and use the upstream scripts/run_tests.sh runner. The installed Windows runtime is not reset or upgraded by this change.
+Core patch compatibility now runs in CI through verify_core.py against the exact production revision. It checks idempotence, compiles the patched modules, and exercises actual native watchdog code in isolated subprocesses. tests/test_core_resilience.py covers loop sockets, stale worker and cron progress, logging backpressure, corruption escalation and retry behavior. This does not execute the entire upstream plugin and platform suite.
+
+supervise.py replaces the shell heartbeat loop. It runs 9router's custom server in the foreground, applies a fatal Node error preload, bounds probes independently, drains the gateway before stopping its router, and reaps detached descendants. Five failed probes exit 1. The native Hermes watchdog remains the internal backstop. A fresh loop socket response, same-PID heartbeat, current housekeeping, and successful cron ticks are required for readiness. The GitHub receipt includes this progress evidence.
+
+deploy/OPERATIONS.txt contains exact Actions and persistent-host commands. The prepared systemd service uses Restart=always, RestartSec=5, StartLimitIntervalSec=0, a 60-second watchdog, and a 4 GiB memory limit. No service or deployed revision is changed merely by editing these files. The installed Windows runtime is not reset or upgraded.

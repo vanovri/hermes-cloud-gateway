@@ -7,8 +7,10 @@ import hashlib
 import json
 import os
 import sqlite3
+import shutil
 import tarfile
 import tempfile
+import time
 from pathlib import Path
 
 HERMES_PATHS = (".env", ".copilot_jwt.json", "auth.json", "config.yaml", "SOUL.md", "bin",
@@ -26,14 +28,23 @@ def persistent_file(path: Path) -> bool:
                 or path.name.startswith(".tick") or path.name == "catch_up_occurrences")
 
 
-def sqlite_backup(source: Path, target: Path) -> None:
-    with closing(sqlite3.connect(f"file:{source}?mode=ro", uri=True, timeout=15)) as original:
-        with closing(sqlite3.connect(target)) as snapshot:
-            original.backup(snapshot, pages=256, sleep=0.1)
-            result = snapshot.execute("PRAGMA quick_check").fetchone()[0]
-            if result != "ok":
-                raise RuntimeError(f"SQLite integrity check failed: {source.name}")
-    target.chmod(0o600)
+def sqlite_backup(source: Path, target: Path, *, timeout=60.0) -> None:
+    deadline = time.monotonic() + timeout
+    def progress(status, remaining, total):
+        if time.monotonic() >= deadline:
+            raise TimeoutError("SQLite snapshot deadline exceeded")
+    try:
+        with closing(sqlite3.connect(source.resolve().as_uri() + "?mode=ro", uri=True, timeout=min(timeout, 5))) as original:
+            with closing(sqlite3.connect(target, timeout=min(timeout, 5))) as snapshot:
+                original.backup(snapshot, pages=256, sleep=0.1, progress=progress)
+                snapshot.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
+                result = snapshot.execute("PRAGMA quick_check").fetchone()[0]
+                if result != "ok":
+                    raise RuntimeError(f"SQLite integrity check failed: {source.name}")
+        target.chmod(0o600)
+    except BaseException:
+        target.unlink(missing_ok=True)
+        raise
 
 
 def create_bundle(home: Path, destination: Path) -> dict:
@@ -89,8 +100,18 @@ def create_bundle(home: Path, destination: Path) -> dict:
                     actual = Path(td) / (str(manifest["sqlite_count"]) + ".sqlite")
                     sqlite_backup(source, actual)
                     manifest["sqlite_count"] += 1
+                else:
+                    # Archive and hash one stable copy, never two reads of a live file.
+                    actual = Path(td) / "current-file"
+                    before = source.stat()
+                    shutil.copy2(source, actual)
+                    after = source.stat()
+                    if (before.st_ino, before.st_size, before.st_mtime_ns) != (after.st_ino, after.st_size, after.st_mtime_ns):
+                        raise RuntimeError("Persistent file changed during snapshot")
                 archive.add(actual, arcname=arcname, recursive=False)
-                manifest["files"][arcname] = {"sha256": hashlib.sha256(actual.read_bytes()).hexdigest(), "bytes": actual.stat().st_size}
+                with actual.open("rb") as handle:
+                    checksum = hashlib.file_digest(handle, "sha256").hexdigest()
+                manifest["files"][arcname] = {"sha256": checksum, "bytes": actual.stat().st_size}
             raw = json.dumps(manifest, sort_keys=True).encode()
             import io
             info = tarfile.TarInfo("hermes-backup-manifest.json")
@@ -103,10 +124,21 @@ def create_bundle(home: Path, destination: Path) -> dict:
             for arcname, metadata in manifest["files"].items():
                 if "sha256" in metadata:
                     handle = check.extractfile(arcname)
-                    if handle is None or hashlib.sha256(handle.read()).hexdigest() != metadata["sha256"]:
+                    if handle is None:
                         raise RuntimeError("Bundle content hash validation failed")
+                    with handle:
+                        if hashlib.file_digest(handle, "sha256").hexdigest() != metadata["sha256"]:
+                            raise RuntimeError("Bundle content hash validation failed")
         temporary.chmod(0o600)
+        with temporary.open("rb") as handle:
+            os.fsync(handle.fileno())
         os.replace(temporary, destination)
+        if os.name == "posix":
+            directory = os.open(destination.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
     return {"persistent_entries": len(entries), "sqlite_snapshots": manifest["sqlite_count"], "archive_bytes": destination.stat().st_size}
 
 

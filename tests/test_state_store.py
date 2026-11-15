@@ -87,6 +87,15 @@ class StateStoreTests(unittest.TestCase):
             self.assertEqual(json.load(archive.extractfile(store.MARKER)), store.marker(meta))
         self.assertEqual(store.git(self.repo, 'rev-parse', 'HEAD'), self.initial_main)
 
+    def test_failed_encryption_cleans_plaintext_snapshot(self):
+        context = self.boot()
+        folder = self.root / 'failed-seal'
+        with patch.object(store, 'run', side_effect=RuntimeError('synthetic encryption failure')):
+            with self.assertRaises(RuntimeError):
+                store.seal(self.home, context, folder)
+        self.assertFalse((folder / 'state.tar.gz').exists())
+        self.assertFalse((folder / 'verify.tar.gz').exists())
+
     def test_push_rejected_then_recovery_heals_and_preserves_latest_database(self):
         context = self.boot()
         bundle, meta = self.sealed(context)

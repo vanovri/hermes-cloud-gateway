@@ -14,26 +14,37 @@ import time
 import zipfile
 
 from state_bundle import create_bundle
+from io_utils import atomic_json, retry_delay, run_process
 
 BUNDLE = 'hermes-bundle.enc'
 META = 'hermes-bundle.meta.json'
 MARKER = '.hermes/state/bundle_generation.json'
 REFS = ['refs/heads/state/live', 'refs/heads/state/bak-1', 'refs/heads/state/bak-2']
 MAX_BYTES = 99_614_720
+MAX_UNPACKED_BYTES = 2_147_483_648
+MAX_MEMBERS = 100_000
 ARTIFACT = re.compile(r'^hermes-recovery-bundle-(\d+)-(\d+)-(\d+)$')
 LEGACY_ARTIFACT = re.compile(r'^hermes-encrypted-recovery-(\d+)$')
 HEX = re.compile(r'^[a-f0-9]{64}$')
 
 
 def run(args, *, cwd=None, data=None, env=None):
-    result = subprocess.run(args, cwd=cwd, input=data, env=env, capture_output=True, timeout=180)
+    result = run_process(args, cwd=cwd, input=data, env=env, timeout=180)
     if result.returncode:
         raise RuntimeError(f'{args[0]} {args[1]} failed, exit {result.returncode}')
     return result.stdout
 
 
 def git(repo, *args, **kwargs):
-    return run(['git', *args], cwd=repo, **kwargs)
+    kwargs['env'] = {**os.environ, **kwargs.get('env', {}), 'GIT_TERMINAL_PROMPT': '0'}
+    attempts = 3 if args[0] in {'ls-remote', 'fetch'} else 1
+    for attempt in range(attempts):
+        try:
+            return run(['git', *args], cwd=repo, **kwargs)
+        except (RuntimeError, subprocess.TimeoutExpired):
+            if attempt + 1 == attempts:
+                raise
+            time.sleep(retry_delay(attempt, base=2))
 
 
 def digest(path):
@@ -42,11 +53,7 @@ def digest(path):
 
 
 def save(path, obj):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_suffix('.tmp')
-    temp.write_text(json.dumps(obj, sort_keys=True) + '\n')
-    temp.chmod(0o600)
-    temp.replace(path)
+    atomic_json(path, obj)
 
 
 def validate_meta(meta):
@@ -71,7 +78,12 @@ def marker(meta):
 
 def verify_archive(path, meta):
     with tarfile.open(path) as archive:
-        members = archive.getmembers()
+        members, expanded = [], 0
+        for member in archive:
+            members.append(member)
+            expanded += member.size
+            if len(members) > MAX_MEMBERS or expanded > MAX_UNPACKED_BYTES:
+                raise ValueError('State archive expands beyond size limit')
         names = [member.name for member in members]
         if len(names) != len(set(names)):
             raise ValueError('Duplicate archive member')
@@ -92,10 +104,12 @@ def verify_archive(path, meta):
         if meta['state_seq'] == 0:
             return  # Legacy archives acquire a verified inner generation on their next snapshot.
         validate_meta(meta)
-        inner = json.load(archive.extractfile(MARKER))
+        with archive.extractfile(MARKER) as handle:
+            inner = json.load(handle)
         if inner != marker(meta):
             raise ValueError('Inner and outer generation disagree')
-        manifest = json.load(archive.extractfile('hermes-backup-manifest.json'))
+        with archive.extractfile('hermes-backup-manifest.json') as handle:
+            manifest = json.load(handle)
         if set(names) != set(manifest['files']) | {'hermes-backup-manifest.json'}:
             raise ValueError('Archive inventory disagrees with manifest')
         for name, expected in manifest['files'].items():
@@ -107,17 +121,23 @@ def verify_archive(path, meta):
                 handle = archive.extractfile(entry)
                 if not entry.isfile() or entry.size != expected['bytes'] or handle is None:
                     raise ValueError('Archive content disagrees with manifest')
-                if hashlib.file_digest(handle, 'sha256').hexdigest() != expected['sha256']:
-                    raise ValueError('Archive content hash mismatch')
+                with handle:
+                    if hashlib.file_digest(handle, 'sha256').hexdigest() != expected['sha256']:
+                        raise ValueError('Archive content hash mismatch')
 
 
 def decrypt(bundle, meta, target):
     if not 0 < bundle.stat().st_size < MAX_BYTES or digest(bundle) != meta['bundle_sha256']:
         raise ValueError('Encrypted bundle checksum mismatch')
-    run(['openssl', 'enc', '-d', '-aes-256-cbc', '-pbkdf2', '-in', str(bundle),
-         '-out', str(target), '-pass', 'env:HERMES_BUNDLE_KEY'])
+    target.touch(mode=0o600)
     target.chmod(0o600)
-    verify_archive(target, meta)
+    try:
+        run(['openssl', 'enc', '-d', '-aes-256-cbc', '-pbkdf2', '-in', str(bundle),
+             '-out', str(target), '-pass', 'env:HERMES_BUNDLE_KEY'])
+        verify_archive(target, meta)
+    except BaseException:
+        target.unlink(missing_ok=True)
+        raise
 
 
 def remote_refs(repo):
@@ -176,7 +196,7 @@ def publish(repo, bundle, meta, expected, *, attempts=3):
             git(repo, *args)
         except (RuntimeError, subprocess.TimeoutExpired):
             if attempt + 1 < attempts:
-                time.sleep(2 * (attempt + 1))
+                time.sleep(retry_delay(attempt, base=2))
             continue
         if remote_refs(repo) == desired:
             return desired
@@ -216,7 +236,7 @@ class GitHubArtifacts:
             except (RuntimeError, subprocess.TimeoutExpired):
                 if attempt == 2:
                     raise
-                time.sleep(2 * (attempt + 1))
+                time.sleep(retry_delay(attempt, base=2))
 
     def legacy_timestamp(self):
         commits = self.api(f'repos/{self.repo}/commits?path={BUNDLE}&per_page=1')
@@ -325,14 +345,15 @@ def seal(home, context, directory):
              'created_at_utc': datetime.now(timezone.utc).isoformat()}
     save(home / MARKER, inner)
     plain = directory / 'state.tar.gz'
-    snapshot = create_bundle(home, plain)
-    save(directory.parent / 'snapshot-proof.json', snapshot)
     bundle = directory / BUNDLE
-    run(['openssl', 'enc', '-aes-256-cbc', '-pbkdf2', '-salt', '-in', str(plain),
-         '-out', str(bundle), '-pass', 'env:HERMES_BUNDLE_KEY'])
-    bundle.chmod(0o600)
-    meta = {**inner, 'bundle_sha256': digest(bundle)}
     try:
+        snapshot = create_bundle(home, plain)
+        save(directory.parent / 'snapshot-proof.json', snapshot)
+        bundle.touch(mode=0o600)
+        bundle.chmod(0o600)
+        run(['openssl', 'enc', '-aes-256-cbc', '-pbkdf2', '-salt', '-in', str(plain),
+             '-out', str(bundle), '-pass', 'env:HERMES_BUNDLE_KEY'])
+        meta = {**inner, 'bundle_sha256': digest(bundle)}
         decrypt(bundle, meta, directory / 'verify.tar.gz')
         save(directory / META, meta)
     finally:
