@@ -75,16 +75,12 @@ def measure(home, core, output):
     shutil.copyfile(Path(__file__).with_name("payload_probe.py"), core / "cloud_payload_probe.py")
     env = {**os.environ, "HERMES_HOME": str(home / ".hermes"), "PAYLOAD_PROBE_OUTPUT": str(output)}
     try:
-        launcher = Path(shutil.which("hermes"))
-        for _ in range(4):
-            match = re.search(r"^exec\s+(\S+)", launcher.read_text(), re.MULTILINE)
-            if not match:
-                raise RuntimeError("Cannot resolve managed Python launcher")
-            launcher = Path(match.group(1).strip("\"'"))
-            if "python" in launcher.name:
-                break
-        code = "import sys,runpy;sys.path.insert(0,sys.argv[1]);import hermes_bootstrap;runpy.run_path(sys.argv[2],run_name='__main__')"
-        run_process([str(launcher), "-I", "-c", code, str(core), str(core / "cloud_payload_probe.py")], env=env, timeout=90, check=True)
+        boundary = run_process(["hermes", "--print-runtime-command", "--module", "cloud_payload_probe"],
+                               env=env, timeout=15, text=True, check=True)
+        command = json.loads(boundary.stdout)
+        if not isinstance(command, list) or not all(isinstance(value, str) for value in command):
+            raise ValueError("Invalid installation runtime command")
+        run_process(command, env=env, timeout=90, check=True)
         return json.loads(output.read_text())
     except Exception as exc:
         if output.exists():
