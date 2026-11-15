@@ -1,0 +1,30 @@
+name: Isolated live LLM route diagnostics
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install exact runtime without starting a gateway
+        run: bash deploy/prepare-runtime.sh
+      - name: Restore read-only state and run bounded text and vision probes
+        env:
+          HERMES_BUNDLE_KEY: ${{ secrets.HERMES_BUNDLE_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          export PATH="$HOME/.local/bin:$HOME/.hermes/bin:$HOME/.hermes/node/bin:$PATH"
+          python3 ops/state_store.py restore --read-only --work "$RUNNER_TEMP/diagnostic-state" --home "$HOME"
+          python3 ops/provider_diagnostics.py --home "$HOME" --core "$HOME/.hermes/hermes-agent" --output "$RUNNER_TEMP/provider-diagnostics.json"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: provider-diagnostics
+          path: ${{ runner.temp }}/provider-diagnostics.json
+          archive: true
+          retention-days: 1
+          if-no-files-found: error
