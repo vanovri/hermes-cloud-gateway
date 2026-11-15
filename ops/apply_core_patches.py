@@ -140,7 +140,60 @@ def apply_resilience(core: Path, source: Path) -> list[Path]:
                  "        from gateway.cloud_resilience import rotate_diagnostic_log\n"
                  "        rotate_diagnostic_log(dump_path)\n"
                  '    with contextlib.suppress(Exception), open(dump_path, "a", encoding="utf-8") as fh:\n')
-    return [guard, log, bootstrap, adapters, watchdog]
+    return [guard, log, bootstrap, adapters, watchdog, *apply_llm_resilience(core, source)]
+
+
+def apply_llm_resilience(core: Path, source: Path) -> list[Path]:
+    helper = core / "agent/cloud_llm_resilience.py"
+    helper.write_text((source / "llm_resilience.py").read_text(encoding="utf-8"), encoding="utf-8")
+    prompt = core / "agent/prompt_builder.py"
+    replace_once(prompt, '    if not skills_by_category:\n        return ""\n',
+                 '    if not skills_by_category:\n        return ""\n'
+                 '    from agent.cloud_llm_resilience import compact_skill_index\n'
+                 '    compact = compact_skill_index(skills_by_category, available_tools)\n'
+                 '    if compact is not None:\n        return compact\n')
+    request = core / "agent/turn_api_request.py"
+    replace_once(request, '    agent._reset_stream_delivery_tracking()\n',
+                 '    from agent.cloud_llm_resilience import bounded_outbound\n'
+                 '    api_messages = bounded_outbound(agent, api_messages)\n'
+                 '    agent._reset_stream_delivery_tracking()\n')
+    fallback = core / "agent/chat_completion_helpers.py"
+    replace_once(fallback, '    if fb_key in unavailable:\n',
+                 '    from agent.cloud_llm_resilience import skip_fallback\n'
+                 '    if skip_fallback(agent, fb):\n        return True\n'
+                 '    if fb_key in unavailable:\n')
+    recovery = core / "agent/turn_recovery.py"
+    replace_once(recovery, 'or (_is_transport_failure and retry_count >= 2)\n',
+                 'or (_is_transport_failure and (getattr(agent, "platform", None) == "telegram" or retry_count >= 2))\n')
+    # Do not sleep for minutes on an interactive route. The blocked route is left
+    # in cooldown; the next healthy route receives the request instead.
+    replace_once(recovery, '    _reset = reset_hint(api_error) if _adaptive else ""\n',
+                 '    if getattr(agent, "platform", None) == "telegram":\n'
+                 '        wait_time = min(wait_time, 2.0)\n'
+                 '    _reset = reset_hint(api_error) if _adaptive else ""\n')
+    overflow = core / "agent/turn_overflow.py"
+    replace_once(overflow, '    exhausted = st.count_attempt(payload_too_large=True)\n',
+                 '    from agent.cloud_llm_resilience import fresh_payload_rejection, PROVIDER_LIMIT_COPY\n'
+                 '    if fresh_payload_rejection(st.messages):\n'
+                 '        if agent._try_activate_fallback(reason=FailoverReason.payload_too_large):\n'
+                 '            from agent.conversation_loop import _arm_fallback_restart\n'
+                 '            st.active_system_prompt = _arm_fallback_restart(agent, st.api_messages, st.active_system_prompt, _retry)\n'
+                 '            return st.done("break")\n'
+                 '        return st.fail_turn(PROVIDER_LIMIT_COPY, compression_exhausted=False,\n'
+                 '                            reason="provider_request_limit", retryable=True)\n'
+                 '    exhausted = st.count_attempt(payload_too_large=True)\n')
+    gateway = core / "gateway/run_turn.py"
+    replace_once(gateway, '    if agent_result.get("compression_exhausted"):\n',
+                 '    if agent_result.get("failure_reason") == "provider_request_limit":\n'
+                 '        return False\n'
+                 '    if agent_result.get("compression_exhausted"):\n')
+    init = core / "agent/agent_init.py"
+    replace_once(init, '    agent._client_kwargs = client_kwargs  # stored for rebuilding after interrupt\n',
+                 '    if getattr(agent, "platform", None) == "telegram":\n'
+                 '        import httpx\n'
+                 '        client_kwargs.update(timeout=httpx.Timeout(20.0, connect=5.0), max_retries=0)\n'
+                 '    agent._client_kwargs = client_kwargs  # stored for rebuilding after interrupt\n')
+    return [helper, prompt, request, fallback, recovery, overflow, gateway, init]
 
 
 if __name__ == "__main__":

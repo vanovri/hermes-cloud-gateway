@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import signal
@@ -74,10 +75,25 @@ def measure(home, core, output):
     shutil.copyfile(Path(__file__).with_name("payload_probe.py"), core / "cloud_payload_probe.py")
     env = {**os.environ, "HERMES_HOME": str(home / ".hermes"), "PAYLOAD_PROBE_OUTPUT": str(output)}
     try:
-        run_process(["hermes", "--run-module", "cloud_payload_probe"], env=env, timeout=90, check=True)
+        launcher = Path(shutil.which("hermes"))
+        for _ in range(4):
+            match = re.search(r"^exec\s+(\S+)", launcher.read_text(), re.MULTILINE)
+            if not match:
+                raise RuntimeError("Cannot resolve managed Python launcher")
+            launcher = Path(match.group(1).strip("\"'"))
+            if "python" in launcher.name:
+                break
+        code = "import sys,runpy;sys.path.insert(0,sys.argv[1]);import hermes_bootstrap;runpy.run_path(sys.argv[2],run_name='__main__')"
+        run_process([str(launcher), "-I", "-c", code, str(core), str(core / "cloud_payload_probe.py")], env=env, timeout=90, check=True)
         return json.loads(output.read_text())
     except Exception as exc:
-        return {"error_type": type(exc).__name__}
+        if output.exists():
+            return json.loads(output.read_text())
+        detail = str(getattr(exc, "stderr", b"") or b"")[-700:]
+        for value in credentials(home).values():
+            if value:
+                detail = detail.replace(value, "[redacted]")
+        return {"error_type": type(exc).__name__, "detail": detail}
 
 
 def diagnose(home, core, output):
@@ -102,6 +118,12 @@ def diagnose(home, core, output):
                     "expires_at": data.get("expiresAt"), "refresh_present": bool(data.get("refreshToken")),
                     "error_code": data.get("errorCode"), "backoff_level": data.get("backoffLevel")})
     result["payload_before"] = measure(home, core, output.with_suffix(".payload-before"))
+    from runtime_config import configure_llm, atomic_write
+    from apply_core_patches import apply_llm_resilience
+    configure_llm(config, home / ".hermes")
+    atomic_write(home / ".hermes/config.yaml", yaml.safe_dump(config, sort_keys=False))
+    apply_llm_resilience(core, Path(__file__).parent)
+    result["payload_after"] = measure(home, core, output.with_suffix(".payload-after"))
     atomic_json(output, result)
     command, extra = router_command(home / ".hermes")
     extra["PORT"] = "20129"

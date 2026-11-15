@@ -30,6 +30,8 @@ def verify(core: Path) -> dict:
                    check=True, timeout=30)
     subprocess.run([sys.executable, str(source.parent / "tests/native_cron_progress_drill.py"), str(core)],
                    check=True, timeout=30)
+    subprocess.run([sys.executable, str(source.parent / "tests/native_llm_drill.py"), str(core)],
+                   check=True, timeout=30)
     subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "tests",
                     "-p", "test_core_resilience.py", "-v"],
                    cwd=source.parent, check=True, timeout=30)

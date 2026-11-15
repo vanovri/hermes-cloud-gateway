@@ -55,6 +55,37 @@ def atomic_write(path: Path, text: str) -> None:
     atomic_text(path, text)
 
 
+def configure_llm(config: dict, home: Path) -> None:
+    env = {}
+    path = home / ".env"
+    if path.exists():
+        for line in path.read_text().splitlines():
+            if "=" in line and not line.lstrip().startswith("#"):
+                key, value = line.split("=", 1)
+                env[key.strip()] = value.strip().strip("\"'")
+    if not env.get("OPENROUTER_API_KEY"):
+        return
+    # These routes passed isolated cloud text AND image probes on 2026-11-15.
+    config["model"] = {"provider": "openrouter", "default": "particle-ai/particle-1:free",
+                       "context_length": 131072, "max_tokens": 4096}
+    fallbacks = []
+    if env.get("GOOGLE_API_KEY"):
+        fallbacks.append({"provider": "custom", "model": "gemini-3.5-flash-lite",
+                          "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+                          "api_key_env": "GOOGLE_API_KEY", "supports_vision": True})
+    fallbacks.extend({"provider": "openrouter", "model": model, "supports_vision": True}
+                     for model in ("nvidia/nemotron-3.5-super-vl:free", "inclusionai/ling-3.2-flash:free"))
+    config["fallback_providers"] = fallbacks
+    config.setdefault("platform_toolsets", {})["telegram"] = ["terminal", "file", "web", "skills", "vision", "image_gen", "no_mcp"]
+    config.setdefault("agent", {}).update(api_max_retries=1, local_stream_stale_timeout=20, reasoning_effort="low")
+    for provider in ("openrouter", "custom", "gemini", "groq", "9router"):
+        config.setdefault("providers", {}).setdefault(provider, {}).update(request_timeout_seconds=20, stale_timeout_seconds=20)
+    config.setdefault("web", {})["extract_char_limit"] = 6000
+    config.setdefault("vision", {}).update(embed_target_bytes=131072, max_calls_per_image=2)
+    config.setdefault("compression", {}).update(threshold=0.4, threshold_tokens=24000, protect_last_n=4)
+    config.setdefault("auxiliary", {})["compression"] = {"provider": "openrouter", "model": "particle-ai/particle-1:free", "timeout": 20}
+
+
 def configure(home: Path) -> dict:
     config_path = home / "config.yaml"
     config = yaml.safe_load(config_path.read_text()) or {}
@@ -62,7 +93,7 @@ def configure(home: Path) -> dict:
     config.setdefault("gateway", {})["delivery_ledger"] = True
     config.setdefault("cron", {})["max_parallel_jobs"] = 1
     config.setdefault("platforms", {}).setdefault("telegram", {}).setdefault("extra", {})["drop_pending_on_cold_boot"] = False
-    # Operational model choices belong to the persisted config, not a bootstrap rewrite.
+    configure_llm(config, home)
     config.setdefault("auxiliary", {}).setdefault("compression", {}).setdefault("provider", "auto")
     if "notion" in config.get("mcp_servers", {}):
         config["mcp_servers"]["notion"]["enabled"] = False
@@ -83,7 +114,7 @@ def configure(home: Path) -> dict:
     for job in data.get("jobs", []):
         if job.get("id") in RESEARCH_JOBS:
             job["provider"] = "openrouter"
-            job["model"] = "openrouter/free"
+            job["model"] = "particle-ai/particle-1:free"
             job["enabled_toolsets"] = ["web", "file", "no_mcp"] if job.get("id") == "6f17c39ca284" else ["web", "no_mcp"]
             changed.append(job["id"])
         if job.get("id") == "c3277fb270f1":
