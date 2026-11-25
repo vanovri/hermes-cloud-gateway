@@ -93,18 +93,23 @@ def measure(home, core, output):
         return {"error_type": type(exc).__name__, "detail": detail}
 
 
-def probe_copilot(model, credential):
+def probe_copilot(model, credential, plugin_dir):
     # An empty profile has no fallback chain, so a marker proves Copilot inference.
+    report = {"provider": "copilot", "model": model}
+    if not (plugin_dir / "plugin.yaml").is_file():
+        return {**report, "success": False, "error_type": "PluginMissing"}
     with tempfile.TemporaryDirectory(prefix="hermes-copilot-probe-") as home:
+        shutil.copytree(plugin_dir, Path(home) / "plugins" / plugin_dir.name,
+                        ignore=shutil.ignore_patterns(".git", "__pycache__"))
         env = {**os.environ, "HERMES_HOME": home, "COPILOT_GITHUB_TOKEN": credential}
         try:
             result = run_process(["hermes", "chat", "-q", "Reply with exactly HERMES_COPILOT_OK. Do not use tools.",
                                   "--provider", "copilot", "--model", model, "--quiet", "--max-turns", "1",
                                   "--toolsets", "no_mcp", "--run-budget", "45"],
                                  env=env, text=True, timeout=75, check=True)
-            return {"provider": "copilot", "model": model, "success": "HERMES_COPILOT_OK" in result.stdout}
+            return {**report, "success": "HERMES_COPILOT_OK" in result.stdout}
         except (OSError, subprocess.SubprocessError) as exc:
-            return {"provider": "copilot", "model": model, "success": False, "error_type": type(exc).__name__}
+            return {**report, "success": False, "error_type": type(exc).__name__}
 
 
 def diagnose(home, core, output):
@@ -129,7 +134,7 @@ def diagnose(home, core, output):
                     "expires_at": data.get("expiresAt"), "refresh_present": bool(data.get("refreshToken")),
                     "error_code": data.get("errorCode"), "backoff_level": data.get("backoffLevel")})
     result["payload_before"] = measure(home, core, output.with_suffix(".payload-before"))
-    from runtime_config import (COPILOT_FALLBACK_MODEL, FALLBACK_MODEL, OPENROUTER_FALLBACK_MODEL,
+    from runtime_config import (COPILOT_FALLBACK_MODEL, COPILOT_PLUGIN, FALLBACK_MODEL, OPENROUTER_FALLBACK_MODEL,
                                 PRIMARY_MODEL, configure_llm, atomic_write)
     from apply_core_patches import apply_llm_resilience
     configure_llm(config, home / ".hermes")
@@ -161,7 +166,8 @@ def diagnose(home, core, output):
         with ThreadPoolExecutor(max_workers=4) as pool:
             futures = [pool.submit(inference, route, env, vision) for route in routes for vision in (False, True)]
             if env.get("COPILOT_GITHUB_TOKEN"):
-                futures.append(pool.submit(probe_copilot, COPILOT_FALLBACK_MODEL, env["COPILOT_GITHUB_TOKEN"]))
+                futures.append(pool.submit(probe_copilot, COPILOT_FALLBACK_MODEL, env["COPILOT_GITHUB_TOKEN"],
+                                           home / ".hermes" / COPILOT_PLUGIN))
             result["probes"] = [future.result() for future in futures]
         atomic_json(output, result)
     finally:

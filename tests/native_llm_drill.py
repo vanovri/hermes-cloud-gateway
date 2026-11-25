@@ -25,6 +25,9 @@ def rate_limit_drill(core):
         home = Path(folder)
         (home / '.env').write_text('GOOGLE_API_KEY=synthetic-google\nOPENROUTER_API_KEY=synthetic-router\n'
                                    'COPILOT_GITHUB_TOKEN=synthetic-copilot\n')
+        plugin = home / 'plugins/github-copilot/plugin.yaml'
+        plugin.parent.mkdir(parents=True)
+        plugin.touch()
         config = {}
         configure_llm(config, home)
     custom_ns = {'_clean': lambda value: str(value or '').strip(),

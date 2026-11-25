@@ -19,6 +19,11 @@ curl -fsSL --connect-timeout 10 --max-time 60 --retry 3 --retry-max-time 120 \
 echo "abf338605dae6dd28d101673ac6aed7995c955745db46d47676bc591a7957209  $installer" | sha256sum -c -
 timeout --kill-after=30s 900s bash "$installer" --commit "$hermes_ref" --non-interactive
 export PATH="$HOME/.local/bin:$HOME/.hermes/node/bin:$PATH"
+# Copilot moved out of this core. Use the exact plugin revision in its bundled catalog.
+if ! timeout --kill-after=5s 90s hermes plugins install github-copilot \
+    --ref 346cfe972f72b6a966e84c1004cf8742554b193d --no-enable --no-deps; then
+  echo 'Optional Copilot plugin install failed; gateway operation can continue'
+fi
 export npm_config_fetch_timeout=30000 npm_config_fetch_retries=3 npm_config_fetch_retry_maxtimeout=30000
 timeout --kill-after=15s 300s npm install -g 9router@0.5.112
 if ! timeout --kill-after=15s 180s npm install -g @llmtrim/cli@0.13.4; then

@@ -16,6 +16,7 @@ GOOGLE_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
 PRIMARY_MODEL = "gemini-3.5-flash-lite"
 FALLBACK_MODEL = "gemini-3.5-flash"
 COPILOT_FALLBACK_MODEL = "gpt-4.1"
+COPILOT_PLUGIN = Path("plugins/github-copilot")
 OPENROUTER_FALLBACK_MODEL = "openrouter/free"
 JOB_TEMPLATES = {
     "ee5cdd1455a1": ("ENVIID weekly brief", "0 9 * * 1", "Rangkum perkembangan mingguan biochar, carbon removal, peluang dan langkah praktis yang relevan untuk ENVIID tongkol jagung Lampung. Gunakan sumber resmi dan tanggal akses. Jangan mengarang revenue, pelanggan, produksi, sertifikasi, pendanaan, atau hasil aplikasi ENVIID."),
@@ -82,7 +83,8 @@ def configure_llm(config: dict, home: Path) -> None:
     fallbacks = [{"provider": "custom", "model": FALLBACK_MODEL,
                   "base_url": GOOGLE_BASE_URL, "key_env": "GOOGLE_API_KEY",
                   "api_mode": "chat_completions", "supports_vision": True}]
-    if env.get("COPILOT_GITHUB_TOKEN"):
+    if (env.get("COPILOT_GITHUB_TOKEN") and (home / COPILOT_PLUGIN / "plugin.yaml").is_file()
+            and "github-copilot" not in (config.get("plugins") or {}).get("disabled", [])):
         # Let the native Copilot client exchange the GitHub credential for a renewable token.
         fallbacks.append({"provider": "copilot", "model": COPILOT_FALLBACK_MODEL,
                           "api_mode": "chat_completions", "supports_vision": True})

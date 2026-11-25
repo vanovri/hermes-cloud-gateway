@@ -49,6 +49,9 @@ class LLMResilienceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             home = Path(folder)
             (home / ".env").write_text("OPENROUTER_API_KEY=synthetic\nGOOGLE_API_KEY=synthetic\nCOPILOT_GITHUB_TOKEN=synthetic\n")
+            plugin = home / "plugins/github-copilot/plugin.yaml"
+            plugin.parent.mkdir(parents=True)
+            plugin.touch()
             config = {"model": {"provider": "9router", "default": "grok-auto"}, "fallback_providers": [{"provider": "groq"}]}
             configure_llm(config, home)
             self.assertEqual(config["model"]["default"], "gemini-3.5-flash-lite")
@@ -70,7 +73,7 @@ class LLMResilienceTests(unittest.TestCase):
     def test_google_does_not_depend_on_openrouter_and_legacy_chain_is_removed(self):
         with tempfile.TemporaryDirectory() as folder, patch.dict('os.environ', {}, clear=True):
             home = Path(folder)
-            (home / '.env').write_text('GOOGLE_API_KEY=synthetic\n')
+            (home / '.env').write_text('GOOGLE_API_KEY=synthetic\nCOPILOT_GITHUB_TOKEN=synthetic\n')
             config = {'fallback_model': {'provider': 'openrouter', 'model': 'extra:free'}}
             configure_llm(config, home)
             self.assertEqual(len(config['fallback_providers']), 1)
