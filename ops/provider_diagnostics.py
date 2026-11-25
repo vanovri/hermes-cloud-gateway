@@ -12,6 +12,7 @@ import signal
 import sqlite3
 import struct
 import subprocess
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -92,6 +93,20 @@ def measure(home, core, output):
         return {"error_type": type(exc).__name__, "detail": detail}
 
 
+def probe_copilot(model, credential):
+    # An empty profile has no fallback chain, so a marker proves Copilot inference.
+    with tempfile.TemporaryDirectory(prefix="hermes-copilot-probe-") as home:
+        env = {**os.environ, "HERMES_HOME": home, "COPILOT_GITHUB_TOKEN": credential}
+        try:
+            result = run_process(["hermes", "chat", "-q", "Reply with exactly HERMES_COPILOT_OK. Do not use tools.",
+                                  "--provider", "copilot", "--model", model, "--quiet", "--max-turns", "1",
+                                  "--toolsets", "no_mcp", "--run-budget", "45"],
+                                 env=env, text=True, timeout=75, check=True)
+            return {"provider": "copilot", "model": model, "success": "HERMES_COPILOT_OK" in result.stdout}
+        except (OSError, subprocess.SubprocessError) as exc:
+            return {"provider": "copilot", "model": model, "success": False, "error_type": type(exc).__name__}
+
+
 def diagnose(home, core, output):
     import yaml
     env = credentials(home)
@@ -114,7 +129,8 @@ def diagnose(home, core, output):
                     "expires_at": data.get("expiresAt"), "refresh_present": bool(data.get("refreshToken")),
                     "error_code": data.get("errorCode"), "backoff_level": data.get("backoffLevel")})
     result["payload_before"] = measure(home, core, output.with_suffix(".payload-before"))
-    from runtime_config import configure_llm, atomic_write
+    from runtime_config import (COPILOT_FALLBACK_MODEL, FALLBACK_MODEL, OPENROUTER_FALLBACK_MODEL,
+                                PRIMARY_MODEL, configure_llm, atomic_write)
     from apply_core_patches import apply_llm_resilience
     configure_llm(config, home / ".hermes")
     atomic_write(home / ".hermes/config.yaml", yaml.safe_dump(config, sort_keys=False))
@@ -136,14 +152,16 @@ def diagnose(home, core, output):
                   for model in ("grok-auto", "ag/gemini-3.8-flash", "ag/gemini-3-flash")]
         if env.get("GOOGLE_API_KEY"):
             routes += [("google", model, "https://generativelanguage.googleapis.com/v1beta/openai", env["GOOGLE_API_KEY"])
-                       for model in ("gemini-3.8-flash", "gemini-3.5-flash-lite")]
+                       for model in (PRIMARY_MODEL, FALLBACK_MODEL)]
         if env.get("OPENROUTER_API_KEY"):
             routes += [("openrouter", model, "https://openrouter.ai/api/v1", env["OPENROUTER_API_KEY"])
-                       for model in ("particle-ai/particle-1:free", "inclusionai/ling-3.2-flash:free", "nvidia/nemotron-3.5-super-vl:free")]
+                       for model in (OPENROUTER_FALLBACK_MODEL, "inclusionai/ling-3.2-flash:free")]
         if env.get("GROQ_API_KEY"):
             routes.append(("groq", "openai/gpt-oss-120b", "https://api.groq.com/openai/v1", env["GROQ_API_KEY"]))
         with ThreadPoolExecutor(max_workers=4) as pool:
             futures = [pool.submit(inference, route, env, vision) for route in routes for vision in (False, True)]
+            if env.get("COPILOT_GITHUB_TOKEN"):
+                futures.append(pool.submit(probe_copilot, COPILOT_FALLBACK_MODEL, env["COPILOT_GITHUB_TOKEN"]))
             result["probes"] = [future.result() for future in futures]
         atomic_json(output, result)
     finally:

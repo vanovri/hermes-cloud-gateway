@@ -48,7 +48,7 @@ class LLMResilienceTests(unittest.TestCase):
     def test_verified_routes_avoid_constrained_provider_and_timeouts_are_short(self):
         with tempfile.TemporaryDirectory() as folder:
             home = Path(folder)
-            (home / ".env").write_text("OPENROUTER_API_KEY=synthetic\nGOOGLE_API_KEY=synthetic\n")
+            (home / ".env").write_text("OPENROUTER_API_KEY=synthetic\nGOOGLE_API_KEY=synthetic\nCOPILOT_GITHUB_TOKEN=synthetic\n")
             config = {"model": {"provider": "9router", "default": "grok-auto"}, "fallback_providers": [{"provider": "groq"}]}
             configure_llm(config, home)
             self.assertEqual(config["model"]["default"], "gemini-3.5-flash-lite")
@@ -56,8 +56,11 @@ class LLMResilienceTests(unittest.TestCase):
             self.assertEqual(config["model"]["key_env"], "GOOGLE_API_KEY")
             self.assertEqual(config["fallback_providers"][0]["model"], "gemini-3.5-flash")
             self.assertEqual(config["fallback_providers"][0]["key_env"], "GOOGLE_API_KEY")
-            self.assertEqual(config["fallback_providers"][-1]["provider"], "openrouter")
-            self.assertEqual(sum(route["provider"] == "openrouter" for route in config["fallback_providers"]), 1)
+            self.assertEqual(
+                [(route["provider"], route["model"]) for route in config["fallback_providers"]],
+                [("custom", "gemini-3.5-flash"), ("copilot", "gpt-4.1"), ("openrouter", "openrouter/free")],
+            )
+            self.assertNotIn("synthetic", json.dumps(config))
             self.assertEqual(config["auxiliary"]["compression"]["model"], "gemini-3.5-flash-lite")
             self.assertTrue(all(entry["supports_vision"] and entry["provider"] != "groq" for entry in config["fallback_providers"]))
             self.assertEqual(config["agent"]["api_max_retries"], 1)

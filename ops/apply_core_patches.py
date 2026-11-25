@@ -167,7 +167,9 @@ def apply_llm_resilience(core: Path, source: Path) -> list[Path]:
     replace_once(api_error, '    _recovered, active_system_prompt = recover_before_classification(\n',
                  '    # Account-level HTTP 429 must leave this provider before pool rotation or terminal quota copy.\n'
                  '    if getattr(api_error, "status_code", None) == 429:\n'
-                 '        if agent._try_activate_fallback(reason=FailoverReason.rate_limit):\n'
+                 '        error_context = agent._extract_api_error_context(api_error)\n'
+                 '        reset_at = error_context.get("reset_at") if isinstance(error_context, dict) else None\n'
+                 '        if agent._try_activate_fallback(reason=FailoverReason.rate_limit, reset_at=reset_at):\n'
                  '            from agent.conversation_loop import _arm_fallback_restart\n'
                  '            active_system_prompt = _arm_fallback_restart(agent, api_messages, active_system_prompt, _retry)\n'
                  '            retry_count = 0\n'

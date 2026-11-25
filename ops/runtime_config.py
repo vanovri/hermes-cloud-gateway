@@ -15,6 +15,8 @@ STARTUP_JOB = "2a8e765b6611"
 GOOGLE_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
 PRIMARY_MODEL = "gemini-3.5-flash-lite"
 FALLBACK_MODEL = "gemini-3.5-flash"
+COPILOT_FALLBACK_MODEL = "gpt-4.1"
+OPENROUTER_FALLBACK_MODEL = "openrouter/free"
 JOB_TEMPLATES = {
     "ee5cdd1455a1": ("ENVIID weekly brief", "0 9 * * 1", "Rangkum perkembangan mingguan biochar, carbon removal, peluang dan langkah praktis yang relevan untuk ENVIID tongkol jagung Lampung. Gunakan sumber resmi dan tanggal akses. Jangan mengarang revenue, pelanggan, produksi, sertifikasi, pendanaan, atau hasil aplikasi ENVIID."),
     "decb1f7e8447": ("Draft LinkedIn mingguan", "17 19 * * 0", "Siapkan satu draf LinkedIn berbahasa Indonesia yang ringkas tentang pembelajaran engineering atau climate-tech. Pisahkan draf dari publikasi. Jangan mengarang pengalaman, sertifikat, metrik dampak, atau hasil kerja pribadi Ardhya. Jika fakta pribadi belum terbukti, gunakan pembahasan edukasi umum dengan sumber resmi."),
@@ -66,7 +68,8 @@ def configure_llm(config: dict, home: Path) -> None:
             if "=" in line and not line.lstrip().startswith("#"):
                 key, value = line.split("=", 1)
                 env[key.strip()] = value.strip().strip("\"'")
-    env.update({key: os.environ[key] for key in ("GOOGLE_API_KEY", "OPENROUTER_API_KEY") if os.environ.get(key)})
+    credential_names = ("GOOGLE_API_KEY", "COPILOT_GITHUB_TOKEN", "OPENROUTER_API_KEY")
+    env.update({key: os.environ[key] for key in credential_names if os.environ.get(key)})
     if not env.get("GOOGLE_API_KEY"):
         if env.get("OPENROUTER_API_KEY"):
             raise ValueError("GOOGLE_API_KEY is required for the production primary route")
@@ -79,15 +82,19 @@ def configure_llm(config: dict, home: Path) -> None:
     fallbacks = [{"provider": "custom", "model": FALLBACK_MODEL,
                   "base_url": GOOGLE_BASE_URL, "key_env": "GOOGLE_API_KEY",
                   "api_mode": "chat_completions", "supports_vision": True}]
+    if env.get("COPILOT_GITHUB_TOKEN"):
+        # Let the native Copilot client exchange the GitHub credential for a renewable token.
+        fallbacks.append({"provider": "copilot", "model": COPILOT_FALLBACK_MODEL,
+                          "api_mode": "chat_completions", "supports_vision": True})
     if env.get("OPENROUTER_API_KEY"):
-        fallbacks.append({"provider": "openrouter", "model": "inclusionai/ling-3.2-flash:free", "supports_vision": True})
+        fallbacks.append({"provider": "openrouter", "model": OPENROUTER_FALLBACK_MODEL, "supports_vision": True})
     config["fallback_providers"] = fallbacks
     # The native loader appends this legacy key, which could reintroduce free routes.
     config.pop("fallback_model", None)
     config.setdefault("fallback", {})["min_switch_reset_seconds"] = 0
     config.setdefault("platform_toolsets", {})["telegram"] = ["terminal", "file", "web", "skills", "vision", "image_gen", "no_mcp"]
     config.setdefault("agent", {}).update(api_max_retries=1, local_stream_stale_timeout=20, reasoning_effort="low")
-    for provider in ("openrouter", "custom", "gemini", "groq", "9router"):
+    for provider in ("openrouter", "custom", "gemini", "groq", "9router", "copilot"):
         config.setdefault("providers", {}).setdefault(provider, {}).update(request_timeout_seconds=20, stale_timeout_seconds=20)
     config.setdefault("web", {})["extract_char_limit"] = 6000
     config.setdefault("vision", {}).update(embed_target_bytes=131072, max_calls_per_image=2)

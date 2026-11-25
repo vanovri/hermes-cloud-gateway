@@ -23,7 +23,8 @@ def rate_limit_drill(core):
     from runtime_config import configure_llm
     with tempfile.TemporaryDirectory() as folder:
         home = Path(folder)
-        (home / '.env').write_text('GOOGLE_API_KEY=synthetic-google\nOPENROUTER_API_KEY=synthetic-router\n')
+        (home / '.env').write_text('GOOGLE_API_KEY=synthetic-google\nOPENROUTER_API_KEY=synthetic-router\n'
+                                   'COPILOT_GITHUB_TOKEN=synthetic-copilot\n')
         config = {}
         configure_llm(config, home)
     custom_ns = {'_clean': lambda value: str(value or '').strip(),
@@ -44,23 +45,28 @@ def rate_limit_drill(core):
     chain_spec.loader.exec_module(schema)
     reason = SimpleNamespace(rate_limit='rate_limit')
     calls = []
-    reply = 'FALLBACK_1_NATIVE_OK'
+    reply = 'COPILOT_NATIVE_OK'
+    reset_at = 2_000_000_000
+    cooldown_hints = []
 
     class HTTP429(RuntimeError):
         status_code = 429
 
-    def primary_call():
-        calls.append('primary')
-        raise HTTP429('Rate limit exceeded: free-models-per-day')
+    def rate_limited(model):
+        calls.append(model)
+        raise HTTP429('Rate limit exceeded')
 
-    def fallback_call():
-        calls.append('fallback_1')
+    def copilot_call():
+        calls.append('gpt-4.1')
         return reply
 
     def resolve_client(provider, *, model, explicit_base_url, explicit_api_key, **kwargs):
-        assert provider == 'custom' and model == 'gemini-3.5-flash'
-        assert explicit_api_key == 'synthetic-google'
-        return SimpleNamespace(base_url=explicit_base_url, create=fallback_call), model
+        if provider == 'custom':
+            assert model == 'gemini-3.5-flash' and explicit_api_key == 'synthetic-google'
+            return SimpleNamespace(base_url=explicit_base_url, create=lambda: rate_limited(model)), model
+        assert provider == 'copilot' and model == 'gpt-4.1'
+        assert not explicit_api_key and not explicit_base_url
+        return SimpleNamespace(base_url='https://api.githubcopilot.com', create=copilot_call), model
 
     def swap_client(agent, client, *args):
         agent.client = client
@@ -75,7 +81,8 @@ def rate_limit_drill(core):
         'hermes_cli.model_normalize': module('hermes_cli.model_normalize', normalize_model_for_provider=lambda model, provider: model),
         'agent.secret_scope': module('agent.secret_scope', get_secret=lambda name: 'synthetic-google' if name == 'GOOGLE_API_KEY' else None),
         'agent.auxiliary_client': module('agent.auxiliary_client', resolve_provider_client=resolve_client),
-        'agent.fallback_cooldown': module('agent.fallback_cooldown', switch_deferred_by_reset=lambda *args: False, _arm_rate_limit_cooldown=noop),
+        'agent.fallback_cooldown': module('agent.fallback_cooldown', switch_deferred_by_reset=lambda *args: False,
+                                         _arm_rate_limit_cooldown=lambda a, r, reset_at: cooldown_hints.append(reset_at)),
         'agent.turn_recovery_codex': module('agent.turn_recovery_codex', reset_codex_reasoning_replay=noop),
         'agent.client_lifecycle': module('agent.client_lifecycle', _swap_fallback_clients=swap_client),
         'agent.agent_runtime_helpers': module('agent.agent_runtime_helpers', sync_credential_pool_entry_id=noop),
@@ -100,26 +107,30 @@ def rate_limit_drill(core):
         chain = schema.get_fallback_chain(config)
         assert chain[0]['key_env'] == 'GOOGLE_API_KEY' and chain[0]['supports_vision'] is True
         agent = SimpleNamespace(model=config['model']['default'], provider='custom', base_url=config['model']['base_url'],
-                                client=SimpleNamespace(create=primary_call), thinking_callback=None,
+                                client=SimpleNamespace(create=lambda: rate_limited(config['model']['default'])), thinking_callback=None,
                                 _fallback_chain=chain, _fallback_index=0,
+                                _extract_api_error_context=lambda error: {'reset_at': reset_at},
                                 _anthropic_prompt_cache_policy=lambda **kwargs: (False, False), _ensure_lmstudio_runtime_loaded=noop)
         agent._try_activate_fallback = lambda **kwargs: activate(agent, **kwargs)
         retry = SimpleNamespace(restart_with_rebuilt_messages=False)
         kwargs = {name: None for name in inspect.signature(handle).parameters if name != 'agent'}
         kwargs.update(_retry=retry, messages=[{'role': 'user', 'content': 'synthetic turn'}], api_messages=[],
                       retry_count=1, max_retries=1, compression_attempts=0)
-        try:
-            agent.client.create()
-        except HTTP429 as error:
-            verdict = handle(agent, **{**kwargs, 'api_error': error})
-        else:
-            raise AssertionError('Primary must return mocked HTTP 429')
-        assert verdict.action == 'break' and verdict.retry_count == 0
-        assert retry.restart_with_rebuilt_messages is True
-        assert agent.model == 'gemini-3.5-flash' and agent._fallback_index == 1
+        for index, model in enumerate(('gemini-3.5-flash', 'gpt-4.1'), start=1):
+            retry.restart_with_rebuilt_messages = False
+            try:
+                agent.client.create()
+            except HTTP429 as error:
+                verdict = handle(agent, **{**kwargs, 'api_error': error})
+            else:
+                raise AssertionError('Google route must return mocked HTTP 429')
+            assert verdict.action == 'break' and verdict.retry_count == 0
+            assert retry.restart_with_rebuilt_messages is True
+            assert agent.model == model and agent._fallback_index == index
         assert agent.client.create() == reply
-        assert calls == ['primary', 'fallback_1'], calls
-    print('PASS native HTTP 429 -> Fallback 1 returns FALLBACK_1_NATIVE_OK; native schema and route binder verified')
+        assert calls == ['gemini-3.5-flash-lite', 'gemini-3.5-flash', 'gpt-4.1'], calls
+        assert cooldown_hints == [reset_at, reset_at], cooldown_hints
+    print('PASS native HTTP 429 on both Google routes -> Copilot response; provider reset hint preserved')
 
 
 def main(core):
