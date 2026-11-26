@@ -80,7 +80,14 @@ jobs:
         run: |
           export PATH="$HOME/.local/bin:$HOME/.hermes/bin:$HOME/.hermes/node/bin:$PATH"
           export GITHUB_SHA="$(git rev-parse HEAD)"
-          python3 ops/supervise.py --max-runtime 17400
+          started=$SECONDS
+          exit_code=0
+          python3 ops/supervise.py --max-runtime 17400 || exit_code=$?
+          # Leave short, repeated startup failures to the independent watchdog.
+          if [[ "$exit_code" == 1 && "$((SECONDS - started))" -ge 600 ]]; then
+            echo 'retry_after_failure=true' >> "$GITHUB_OUTPUT"
+          fi
+          exit "$exit_code"
 
       - name: Snapshot and seal next encrypted state generation
         id: persist
@@ -122,7 +129,7 @@ jobs:
             echo '::warning::Published recovery artifact retained until its five-day expiry'
           fi
       - name: Queue next cycle after successful persistence
-        if: ${{ always() && steps.publish.outcome == 'success' && steps.gateway.outcome == 'success' }}
+        if: ${{ always() && !cancelled() && steps.publish.outcome == 'success' && (steps.gateway.outcome == 'success' || steps.gateway.outputs.retry_after_failure == 'true') }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: timeout --kill-after=5s 45s gh workflow run hermes.yml
