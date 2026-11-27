@@ -1,3 +1,4 @@
+from io import BytesIO
 import json
 from pathlib import Path
 import sys
@@ -8,10 +9,18 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ops"))
 from llm_resilience import bounded_outbound, compact_skill_index, fresh_payload_rejection, skip_fallback, RequestBudgetExceeded, unhealthy_legacy_override
+from provider_diagnostics import request
 from runtime_config import configure_llm
 
 
 class LLMResilienceTests(unittest.TestCase):
+    def test_provider_probe_identifies_itself_to_the_api(self):
+        with patch("urllib.request.urlopen", return_value=BytesIO(b'{"data": []}')) as transport:
+            result = request("https://example.com/models", {})
+        self.assertEqual(result["http"], 200)
+        probe = transport.call_args.args[0]
+        self.assertTrue(probe.get_header("User-agent").startswith("Hermes-Provider-Diagnostics/"))
+
     def test_legacy_override_cannot_reintroduce_failed_cloud_route(self):
         self.assertTrue(unhealthy_legacy_override({"provider": "custom", "model": "grok-auto"}))
         self.assertTrue(unhealthy_legacy_override({"provider": "openrouter", "model": "particle-ai/particle-1:free"}))

@@ -35,7 +35,9 @@ def request(url, headers, payload=None, secrets=()):
     started = time.monotonic()
     try:
         data = json.dumps(payload).encode() if payload is not None else None
-        req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json", **headers})
+        req = urllib.request.Request(url, data=data, headers={
+            "Content-Type": "application/json", "User-Agent": "Hermes-Provider-Diagnostics/1.0", **headers,
+        })
         with urllib.request.urlopen(req, timeout=15) as response:
             body = json.loads(response.read(2_000_000))
         return {"http": 200, "seconds": round(time.monotonic() - started, 3), "body": body}
