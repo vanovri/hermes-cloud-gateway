@@ -22,6 +22,9 @@ from io_utils import atomic_json, run_process
 from supervise import router_command
 
 
+GROQ_PROBES = (("openai/gpt-oss-120b", False), ("qwen/qwen3.8-27b", True))
+
+
 def credentials(home):
     result = {}
     for line in (home / ".hermes/.env").read_text().splitlines():
@@ -55,8 +58,9 @@ def request(url, headers, payload=None, secrets=()):
 def red_image():
     def chunk(kind, data):
         return struct.pack("!I", len(data)) + kind + data + struct.pack("!I", zlib.crc32(kind + data) & 0xffffffff)
-    png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack("!IIBBBBB", 16, 16, 8, 2, 0, 0, 0))
-    png += chunk(b"IDAT", zlib.compress((b"\0" + b"\xff\0\0" * 16) * 16)) + chunk(b"IEND", b"")
+    side = 32  # Minimum accepted by the Groq vision endpoint.
+    png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack("!IIBBBBB", side, side, 8, 2, 0, 0, 0))
+    png += chunk(b"IDAT", zlib.compress((b"\0" + b"\xff\0\0" * side) * side)) + chunk(b"IEND", b"")
     return "data:image/png;base64," + base64.b64encode(png).decode()
 
 
@@ -163,10 +167,12 @@ def diagnose(home, core, output):
         if env.get("OPENROUTER_API_KEY"):
             routes += [("openrouter", model, "https://openrouter.ai/api/v1", env["OPENROUTER_API_KEY"])
                        for model in (OPENROUTER_FALLBACK_MODEL, "inclusionai/ling-3.2-flash:free")]
-        if env.get("GROQ_API_KEY"):
-            routes.append(("groq", "openai/gpt-oss-120b", "https://api.groq.com/openai/v1", env["GROQ_API_KEY"]))
         with ThreadPoolExecutor(max_workers=4) as pool:
             futures = [pool.submit(inference, route, env, vision) for route in routes for vision in (False, True)]
+            if env.get("GROQ_API_KEY"):
+                for model, vision in GROQ_PROBES:
+                    route = ("groq", model, "https://api.groq.com/openai/v1", env["GROQ_API_KEY"])
+                    futures.append(pool.submit(inference, route, env, vision))
             if env.get("COPILOT_GITHUB_TOKEN"):
                 futures.append(pool.submit(probe_copilot, COPILOT_FALLBACK_MODEL, env["COPILOT_GITHUB_TOKEN"],
                                            home / ".hermes" / COPILOT_PLUGIN))

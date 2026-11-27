@@ -1,6 +1,8 @@
+import base64
 from io import BytesIO
 import json
 from pathlib import Path
+import struct
 import sys
 import tempfile
 from types import SimpleNamespace
@@ -9,11 +11,17 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ops"))
 from llm_resilience import bounded_outbound, compact_skill_index, fresh_payload_rejection, skip_fallback, RequestBudgetExceeded, unhealthy_legacy_override
-from provider_diagnostics import request
+from provider_diagnostics import GROQ_PROBES, red_image, request
 from runtime_config import configure_llm
 
 
 class LLMResilienceTests(unittest.TestCase):
+    def test_groq_probes_use_supported_inputs(self):
+        self.assertEqual(dict(GROQ_PROBES), {"openai/gpt-oss-120b": False, "qwen/qwen3.8-27b": True})
+        png = base64.b64decode(red_image().split(",", 1)[1])
+        width, height = struct.unpack_from("!II", png, 16)
+        self.assertGreaterEqual(min(width, height), 32)
+
     def test_provider_probe_identifies_itself_to_the_api(self):
         with patch("urllib.request.urlopen", return_value=BytesIO(b'{"data": []}')) as transport:
             result = request("https://example.com/models", {})
